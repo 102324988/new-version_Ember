@@ -1,0 +1,19 @@
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+python-dotenv>=1.0.0
+openai==2.26.0
+httpx==0.28.1
+httpcore==1.0.9
+aiohttp>=3.9.0
+pyyaml>=6.0.1
+psycopg2-binary>=2.9.9
+numpy>=1.26.0
+pgvector>=0.2.5
+json_repair>=0.28.0
+edge-tts>=7.3.1,<8
+neo4j==5.20.0
+
+# 测试依赖
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+tzdata>=2024.1

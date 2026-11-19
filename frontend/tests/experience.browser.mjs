@@ -19,7 +19,9 @@ await vite.listen();
 let browser;
 try {
   browser = await chromium.launch({ headless: true,
-    ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}),
+    ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE
+      ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE }
+      : { channel: 'chromium' }),
     args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
   const page = await browser.newPage({ viewport: { width: 1366, height: 900 } });
   page.setDefaultTimeout(8000);
@@ -211,6 +213,7 @@ try {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: resolve(artifacts, 'mobile.png'), fullPage: true });
   assert.deepEqual(errors, []);
+  await page.close();
   const renderPage = await browser.newPage({ viewport: { width: 1366, height: 900 } });
   const renderErrors = [];
   renderPage.on('console', message => { if (message.type() === 'error') renderErrors.push(message.text()); });

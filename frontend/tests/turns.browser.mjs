@@ -31,6 +31,7 @@ try {
     };
   });
   let socket, current = null;
+  let completeWhileCancelling = false;
   const sent = [], history = [];
   const now = Date.parse('2026-10-21T17:40:00+08:00');
   let pipeline = { phase: 'budget_wait', pending_memories: 2, batches: [{ id: 'synthetic-memory-batch', stage: 'encoding', index: 0, total: 1 }],
@@ -68,6 +69,10 @@ try {
       const event = JSON.parse(raw);
       if (event.type === 'cancel_turn') {
         assert.equal(event.turn_id, current.turn_id);
+        if (completeWhileCancelling) {
+          current.status = 'completed';
+          completeWhileCancelling = false;
+        }
         if (current.status !== 'completed') { current.status = 'stopping'; current.phase = 'stopping'; }
         emit({ type: 'turn.stopping', ...current });
         return;
@@ -158,8 +163,8 @@ try {
   assert.equal(await page.getByRole('button', { name: '发送', exact: true }).isEnabled(), true);
   await input.press('Enter');
   await page.getByRole('button', { name: '停止生成', exact: true }).waitFor();
-  current.status = 'completed';
-  current.released = false;
+  // The reply wins the race when the user's cancel reaches the server.
+  completeWhileCancelling = true;
   await input.fill('收尾确认后才能发送的下一条');
   await page.getByRole('button', { name: '打断并发送', exact: true }).click();
   await page.getByRole('button', { name: '正在停止…', exact: true }).waitFor();

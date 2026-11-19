@@ -144,9 +144,12 @@ const Live2DViewer = ({ currentEmotion, audio, modelPath, lowPerformance = false
         canvas.addEventListener('webglcontextlost', contextLost);
 
         const init = async () => {
+            if (disposed) return;
+            setModelLoaded(false);
+            setModelError(false);
             try {
                 const app = new PIXI.Application({
-                    view: canvasRef.current,
+                    view: canvas,
                     width: Math.max(1, containerRef.current.clientWidth),
                     height: Math.max(1, containerRef.current.clientHeight),
                     resolution: lowPerformance ? 1 : Math.min(window.devicePixelRatio || 1, 2),
@@ -195,7 +198,9 @@ const Live2DViewer = ({ currentEmotion, audio, modelPath, lowPerformance = false
             }
         };
 
-        init();
+        // React StrictMode immediately cleans up the first setup in development.
+        // Give that cleanup a chance to cancel before Pixi acquires a context.
+        queueMicrotask(init);
 
         return () => {
             disposed = true;
@@ -295,6 +300,7 @@ const Live2DViewer = ({ currentEmotion, audio, modelPath, lowPerformance = false
     return (
         <div ref={containerRef} className="live2d-viewer" aria-label="角色展示" data-renderer-state={modelError ? 'failed' : modelLoaded ? 'ready' : 'loading'}>
         <canvas
+            key={JSON.stringify([modelPath, loadAttempt, lowPerformance])}
             id={LIVE2D_CONFIG.canvas.id}
             ref={canvasRef}
             aria-hidden="true"

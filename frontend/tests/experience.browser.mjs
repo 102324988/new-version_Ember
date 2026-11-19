@@ -223,7 +223,14 @@ try {
   try { await renderPage.locator('.live2d-viewer[data-renderer-state="ready"]').waitFor({ timeout: 30000 }); }
   catch (error) { console.error(JSON.stringify({ rendererErrors: renderErrors })); throw error; }
   await renderPage.screenshot({ path: resolve(artifacts, 'desktop-live2d.png'), fullPage: true });
-  await renderPage.locator('.live2d-viewer canvas').evaluate(canvas => canvas.dispatchEvent(new Event('webglcontextlost', { cancelable: true })));
+  const contextLost = await renderPage.locator('.live2d-viewer canvas').evaluate(canvas => {
+    const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
+    const extension = gl?.getExtension('WEBGL_lose_context');
+    if (!extension) return false;
+    extension.loseContext();
+    return gl.isContextLost();
+  });
+  assert.equal(contextLost, true);
   await renderPage.getByRole('button', { name: '重新加载角色' }).click();
   await renderPage.locator('.live2d-viewer[data-renderer-state="ready"]').waitFor({ timeout: 30000 });
   await renderPage.close();

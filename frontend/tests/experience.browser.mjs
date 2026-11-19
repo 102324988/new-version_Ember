@@ -20,7 +20,7 @@ let browser;
 try {
   browser = await chromium.launch({ headless: true,
     ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}),
-    args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+    args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
   const page = await browser.newPage({ viewport: { width: 1366, height: 900 } });
   page.setDefaultTimeout(8000);
   const errors = [];

@@ -14,7 +14,7 @@ await vite.listen();
 let browser;
 try {
   browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE });
-  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  const page = await browser.newPage({ viewport: { width: 1060, height: 844 } });
   page.setDefaultTimeout(10000);
   const errors = [], sent = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -98,7 +98,7 @@ try {
   await dialog.getByRole('button', { name: '保存场景', exact: true }).click();
   await dialog.getByText('场景已保存。', { exact: true }).waitFor();
   await mkdir(resolve(root, 'test-results'), { recursive: true });
-  await page.screenshot({ path: resolve(root, 'test-results/scene-direct-mobile.png'), fullPage: true });
+  await page.screenshot({ path: resolve(root, 'test-results/scene-direct-desktop.png'), fullPage: true });
   assert.equal(sent.filter(item => item.content).length, 0);
 
   await dialog.getByLabel('交流方式', { exact: true }).selectOption('unknown');
@@ -126,7 +126,7 @@ try {
   await allowed.uncheck();
   await page.waitForFunction(() => document.querySelector('dialog input[type=checkbox]')?.disabled === false);
   assert.equal(experience.quiet, true);
-  await page.screenshot({ path: resolve(root, 'test-results/proactive-permission-mobile.png'), fullPage: true });
+  await page.screenshot({ path: resolve(root, 'test-results/proactive-permission-desktop.png'), fullPage: true });
   await page.getByRole('button', { name: '关闭设置' }).click();
   await page.getByRole('button', { name: '专注陪伴', exact: true }).click();
   assert.equal(await page.getByLabel('勿扰 · 暂停主动发言').isChecked(), true);
@@ -148,7 +148,7 @@ try {
   assert.equal(await reminder.getByLabel('网页提醒时间（世界时间）').inputValue(), '2026-11-08T16:00');
   await reminder.getByRole('button', { name: '开启网页提醒' }).click();
   await reminder.getByRole('button', { name: '关闭网页提醒' }).waitFor();
-  await page.screenshot({ path: resolve(root, 'test-results/reminder-mobile.png'), fullPage: true });
+  await page.screenshot({ path: resolve(root, 'test-results/reminder-desktop.png'), fullPage: true });
   await reminder.getByRole('button', { name: '关闭网页提醒' }).click();
   await reminder.getByRole('button', { name: '开启网页提醒' }).waitFor();
   await page.getByRole('button', { name: '活动回顾', exact: true }).click();
@@ -156,9 +156,9 @@ try {
   await page.getByText('结束了这一轮自己的笔记整理', { exact: true }).waitFor();
   assert.equal(await page.getByText('不应展示的未来事件', { exact: true }).count(), 0);
   assert.ok(await page.getByText('离线规则推演').count());
-  await page.screenshot({ path: resolve(root, 'test-results/role-life-mobile.png'), fullPage: true });
+  await page.screenshot({ path: resolve(root, 'test-results/role-life-desktop.png'), fullPage: true });
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ passed: true, checks: ['direct scene save', 'validation and failure retry', 'no chat or draft changes',
-    'concurrent scene conflict', 'permission and focus silence agree', 'refresh persistence', 'explicit reminder and retry', 'role life provenance', 'mobile layout'] }));
+    'concurrent scene conflict', 'permission and focus silence agree', 'refresh persistence', 'explicit reminder and retry', 'role life provenance', 'desktop layout'] }));
 } finally { await browser?.close(); await vite.close(); }

@@ -6,6 +6,7 @@
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from contextvars import copy_context
 from typing import Optional, Callable
 from tools.base import (
     BaseTool,
@@ -163,7 +164,7 @@ class ToolExecutor:
     ) -> ToolResult:
         """在线程池中执行工具并设置超时"""
         try:
-            future = self._thread_pool.submit(tool.execute, params)
+            future = self._thread_pool.submit(copy_context().run, tool.execute, params)
             return future.result(timeout=timeout)
         except FutureTimeoutError:
             error_msg = f"工具 '{tool.name}' 执行超时（>{timeout}s）"

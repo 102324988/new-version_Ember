@@ -5,6 +5,7 @@
 """
 
 import concurrent.futures
+from contextvars import copy_context
 import json
 import logging
 import re
@@ -187,7 +188,7 @@ class ToolCallProcessor:
                 if cancel_check:
                     cancel_check()
                 future = executor.submit(
-                    self.tool_executor.execute, call["name"], call["parameters"]
+                    copy_context().run, self.tool_executor.execute, call["name"], call["parameters"]
                 )
                 future_to_call[future] = call
 

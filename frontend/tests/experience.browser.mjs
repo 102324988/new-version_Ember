@@ -197,7 +197,7 @@ try {
   assert.equal(await input.inputValue(), '刷新后仍在的合成草稿');
 
   const checked = [];
-  for (const width of [320, 390, 768, 1366, 1920]) {
+  for (const width of [768, 1060, 1366, 1920]) {
     await page.setViewportSize({ width, height: 900 });
     for (const view of ['舞台优先', '对话优先']) {
       await page.getByRole('button', { name: view, exact: true }).click();
@@ -210,8 +210,8 @@ try {
   await page.setViewportSize({ width: 1366, height: 900 });
   await page.getByRole('button', { name: '舞台优先', exact: true }).click();
   await page.screenshot({ path: resolve(artifacts, 'desktop-fallback.png'), fullPage: true });
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.screenshot({ path: resolve(artifacts, 'mobile.png'), fullPage: true });
+  await page.setViewportSize({ width: 768, height: 844 });
+  await page.screenshot({ path: resolve(artifacts, 'compact-desktop.png'), fullPage: true });
   assert.deepEqual(errors, []);
   await page.close();
   const renderPage = await browser.newPage({ viewport: { width: 1366, height: 900 } });

@@ -66,7 +66,7 @@ try {
   await page.getByRole('button', { name: '关闭存档管理' }).click();
   await page.getByRole('button', { name: /^接着上次/ }).click();
   await page.locator('.shared-material-text').waitFor();
-  for (const width of [320, 390, 768]) {
+  for (const width of [768, 1060, 1366]) {
     await page.setViewportSize({ width, height: 900 });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), `overflow at ${width}`);
     const bounds = await page.getByRole('dialog', { name: '接着上次', exact: true }).boundingBox();
@@ -91,7 +91,7 @@ try {
   assert.deepEqual(errors, []);
   const result = { passed: true, checks: ['persisted source selection', 'verbatim material', 'draft preservation',
     'refresh persistence', 'put away/refocus', 'HTTP failure/retry', 'archive world restore',
-    '320/390/768 layouts', 'source navigation', 'agreement shortcut', 'no page errors'] };
+    '768/1060/1366 layouts', 'source navigation', 'agreement shortcut', 'no page errors'] };
   await writeFile(resolve(out, 'result.json'), JSON.stringify(result, null, 2));
   console.log(JSON.stringify(result));
 } catch (error) {

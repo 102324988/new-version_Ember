@@ -4,7 +4,7 @@
 
 ## 当前能力
 
-- 一个角色世界、一个写入进程；生产前端与 API 同源，手机尺寸网页可登录并接续聊天、材料和活动。
+- 一个角色世界、一个写入进程；桌面浏览器通过同源前端与 API 登录并接续聊天、材料和活动。
 - 访问码登录、持久设备会话、设备撤销；HTTP、WebSocket、语音和存档接口均受保护。会话 Cookie 为 HttpOnly / SameSite=Strict；修改请求校验 CSRF，WebSocket 校验来源并在收发时复查授权。
 - 世界文件与 PostgreSQL 分别保存在命名卷；进程重启恢复状态。进程异常退出由 Compose 重启，数据库断连返回故障，重连后可以继续读取。
 - 现实时间驱动的持久备份任务，包含租约、有限重试、去重和备份回执核对。当前只注册自动备份任务，尚未接入外部提醒或消息投递。
@@ -54,17 +54,9 @@ docker compose --env-file deploy/service.env -f compose.service.yml ps
 
 默认 `START_TIME` 为空、时区 Asia/Shanghai、时间倍率 1。正常重启跟随现实时间；游戏读档恢复存档逻辑时间。服务任务和额度仍使用现实时间。
 
-## 手机与后续部署
+## 后续部署
 
-当前验证只绑定回环地址，没有开放局域网或公网。若之后在受信任局域网试用手机，修改服务配置：
-
-```dotenv
-EMBER_BIND_HOST=0.0.0.0
-EMBER_PUBLIC_URL=http://主机局域网IP:8080
-EMBER_COOKIE_SECURE=false
-```
-
-然后重新执行上面的 `up -d --build`，手机与主机处于同一网络，用该 IP 访问。HTTP 方案只用于局域网验证；正式远程访问先配置 TLS 反向代理，示例见 `deploy/Caddyfile.example`。主机上的代理转发到回环端口 8080，配置改为：
+本机服务默认只绑定回环地址。后续部署到独立常开设备时，使用 TLS 反向代理，示例见 `deploy/Caddyfile.example`。代理转发到回环端口 8080，配置如下：
 
 ```dotenv
 EMBER_BIND_HOST=127.0.0.1
@@ -74,7 +66,7 @@ EMBER_COOKIE_SECURE=true
 
 Origin 配置不能带路径；如确需额外入口，用逗号分隔 `EMBER_ALLOWED_ORIGINS`。默认使用同一个域名访问页面与 API。不要公开数据库端口，或直接把旧开发服务的 8000 / 5173 端口映射到公网。
 
-最终机器、真实手机、TLS、主电脑关机后 72 小时可联系，以及跨设备的实际回访效果，留待部署设备确定后验收。Docker 自动重启依赖宿主与 Docker 本身正常运行；关闭当前电脑不会让本地容器继续运行。
+最终机器、TLS、主电脑关机后 72 小时可联系和异机恢复，留待部署设备确定后验收。Docker 自动重启依赖宿主与 Docker 本身正常运行；关闭当前电脑不会让本地容器继续运行。
 
 ## 日常运行和回退
 
@@ -129,7 +121,7 @@ docker compose --env-file deploy/service.env -f compose.service.yml start ember
 | 完整后端隔离回归 | 270 项通过；仍有 FastAPI `on_event` 弃用提醒 |
 | 前端单元、lint、生产构建 | 27 项通过；构建保留 Live2D 大包提醒 |
 | 实际镜像构建与 Compose | PostgreSQL / 合成模型 / Ember 均健康；应用非 root、只读根文件系统 |
-| 390×844 浏览器 | 登录、错误提示、刷新会话、聊天与材料、设备撤销、无横向溢出与页面异常均通过 |
+| 浏览器会话 | 登录、错误提示、刷新会话、聊天与材料、会话撤销、页面布局与异常检查 |
 | 优雅重启与杀死 PID 1 | 容器恢复，会话、消息稳定 ID、材料保留 |
 | 故障与恢复 | 断连返回 503、重连、真实世界存读档及身份保留均通过；控制 SQL 在新测试库逐行比对一致（任务 60、登录窗口 1、会话 11、用量 9 行） |
 
@@ -150,4 +142,4 @@ docker compose --env-file output/service-verify/service.env -f compose.service.y
 
 浏览器脚本需要 Playwright 与 Chromium，可沿用 `tests/README.md` 的环境变量。恢复脚本校验容器项目标签，只在固定合成栈断开数据库，创建随机 `ember_test_service_restore_*` 新库并在核对后删除该新库。重复登录仍受十次／五分钟的限制，遇到 429 等待窗口结束。
 
-本机报告：`output/service-verify/browser/result.json`、`browser/phone-service.png`、`recovery-result.json`。本轮结束后测试容器停止，命名卷与镜像保留。后续依次做：确定常开设备 → 配置 TLS 与真实手机 → 少量真实模型/语音抽查 → 72 小时持续运行与异机恢复 → 再接首个外部消息渠道。
+本机报告位于 `output/service-verify/`。后续依次做：确定常开设备 → 配置 TLS → 少量真实模型和语音抽查 → 72 小时持续运行与异机恢复。

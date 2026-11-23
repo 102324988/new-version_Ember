@@ -46,8 +46,7 @@ def fix_thought_tags(text: str) -> str:
         logger.warning("修复了未开启的 </thought> 标签")
 
     if text != original_text:
-        logger.info(f"标签修复前: {original_text[:100]}...")
-        logger.info(f"标签修复后: {text[:100]}...")
+        logger.debug("已修复回复控制标签")
 
     return text
 
@@ -76,6 +75,7 @@ def remove_thought_content(text: str) -> str:
 
     # 清理可能残留的不完整标签
     text = re.sub(r'</?thought[^>]*>', '', text)
+    text = re.sub(r'</?response\s*>', '', text, flags=re.IGNORECASE)
 
     # 清理多余的空行
     text = re.sub(r'\n\s*\n\s*\n', '\n\n', text)

@@ -1,6 +1,7 @@
 """Cooperative turn cancellation; terminal state is confirmed by the worker."""
 import logging
 import threading
+import time
 import uuid
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,12 @@ class Turn:
         self.cancelled = threading.Event()
         self._lock = threading.RLock()
         self._closer = None
+        self._started_at = time.monotonic()
+        self.timings_ms = {}
+        self.reply_requests = 0
+
+    def mark(self, stage):
+        self.timings_ms.setdefault(stage, round((time.monotonic() - self._started_at) * 1000))
 
     def check(self):
         if self.cancelled.is_set():

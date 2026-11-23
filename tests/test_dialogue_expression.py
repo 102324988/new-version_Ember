@@ -36,6 +36,19 @@ def test_style_preferences_do_not_replace_user_persona(style):
     assert '表达偏好 expressive_v1' in compiled
 
 
+def test_rhythm_experiment_changes_one_passage_and_respects_length_override():
+    args = ('合成自定义人物。', '自定义系统提示。', 'expressive_v1')
+    baseline, count = compile_persona(*args)
+    candidate, candidate_count = compile_persona(*args, rhythm='turn_v1')
+    old_passage = '长度随话题和情绪变化，可以一句，也可以认真说一段；无固定句数。'
+    prefix, suffix = baseline.split(old_passage)
+    assert candidate.startswith(prefix) and candidate.endswith(suffix)
+    assert '先用直白的话重说刚才没讲清的那一点' in candidate
+    assert candidate_count == count
+    assert compile_persona(*args, {'length': 'brief'}, rhythm='turn_v1') == compile_persona(*args, {'length': 'brief'})
+    assert compile_persona(*args[:2], 'legacy', rhythm='turn_v1') == compile_persona(*args[:2], 'legacy')
+
+
 @pytest.mark.parametrize('version,style', [('typo', {}), ('expressive_v1', []),
     ('expressive_v1', {'length': 'three_sentences'}), ('expressive_v1', {'unknown': True})])
 def test_invalid_expression_configuration_reports_error(version, style):

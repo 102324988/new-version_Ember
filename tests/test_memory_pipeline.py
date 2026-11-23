@@ -55,6 +55,42 @@ def add(memory, text, role='user'):
     return key
 
 
+def test_sleep_decay_keeps_durable_memory_and_its_vector():
+    bus, _, store, _, _ = harness()
+    try:
+        key = str(uuid.uuid4())
+        with connection() as db, db.cursor() as cursor:
+            cursor.execute('INSERT INTO episodic_memory (memory_id, content, clarity, embedding) VALUES (%s,%s,%s,%s::vector)',
+                (key, '合成的低清晰度来源', .02, '[' + ','.join(['1'] + ['0'] * 1535) + ']'))
+        bus.publish(Event('memory.sleep', {}))
+        with connection() as db, db.cursor() as cursor:
+            cursor.execute('SELECT clarity,embedding IS NOT NULL FROM episodic_memory WHERE memory_id=%s', (key,))
+            clarity, has_vector = cursor.fetchone()
+        assert .01 <= clarity < .02 and has_vector
+    finally:
+        store.stop()
+
+
+def test_vector_recovery_inserts_only_missing_records():
+    from utils.recover_missing_vectors import merge_missing
+
+    existing, missing = [str(uuid.uuid4()) for _ in range(2)]
+    vector = '[' + ','.join(['1'] + ['0'] * 1535) + ']'
+    def row(key):
+        return ('备份正文', vector, '备份摘要', vector, 1, 1, .08, 0, None, '{}', None, 0, key)
+    rows = {key: row(key) for key in (existing, missing)}
+    with connection() as db, db.cursor() as cursor:
+        cursor.execute('INSERT INTO episodic_memory (memory_id, content) VALUES (%s,%s)', (existing, '当前正文'))
+    with connection() as db:
+        assert merge_missing(db, rows) == {'backup': 2, 'already_present': 1, 'missing': 1, 'inserted': 0}
+    with connection() as db:
+        assert merge_missing(db, rows, apply=True)['inserted'] == 1
+        assert merge_missing(db, rows, apply=True)['inserted'] == 0
+        with db.cursor() as cursor:
+            cursor.execute('SELECT memory_id,content,embedding IS NOT NULL FROM episodic_memory WHERE memory_id=ANY(%s)', (list(rows),))
+            assert set(cursor.fetchall()) == {(existing, '当前正文', False), (missing, '备份正文', True)}
+
+
 def test_complete_recall_payload_is_distinct_from_short_ui_preview():
     registry = ToolRegistry(); tool = MemoryQueryTool(); registry.register(tool)
     processor = ToolCallProcessor(registry)

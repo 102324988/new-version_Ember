@@ -1,5 +1,75 @@
 [
   {
+    "id": "sequence_clarification",
+    "time": "2026-11-07 21:10:00",
+    "feeling": "轻松，想把话说清楚",
+    "intent": "接住对方眼前的话",
+    "mode": "remote",
+    "history": [
+      {"role": "user", "content": "今晚不聊排序啦。你刚才说书桌差点成了什么？"},
+      {"role": "assistant", "content": "我说差点成了纸山。那就先不聊排序。"},
+      {"role": "user", "content": "纸山？怎么个说法？"}
+    ],
+    "followups": [
+      {"after_seconds": 25, "content": "喔，懂了。你说慢一点就不吓人了，哈哈。"},
+      {"after_seconds": 55, "content": "今天先到这，我要去看小猫视频了。"}
+    ]
+  },
+  {
+    "id": "sequence_cross_day_facts",
+    "time": "2026-11-07 17:05:00",
+    "feeling": "对文字线索好奇",
+    "intent": "一起比较材料和猜测",
+    "mode": "remote",
+    "history": [
+      {"role": "user", "content": "我把卡片上的一句话发给你：枝间有个轮廓，但挡着叶子。只有这句，没有图片。你怎么看？"}
+    ],
+    "followups": [
+      {"after_seconds": 40, "content": "我没发图片哦，也不知道是什么鸟。你能把我们知道和不知道的分开说吗？"},
+      {"after_seconds": 86400, "content": "隔了一天，接着聊。我要选一个稳妥的标题，但不想删掉疑问，你有什么主意？"}
+    ]
+  },
+  {
+    "id": "sequence_explain_and_repair",
+    "time": "2026-11-07 15:10:00",
+    "feeling": "对解释清楚这件事很感兴趣",
+    "intent": "用对方能听懂的方式说清区别",
+    "mode": "unknown",
+    "history": [
+      {"role": "user", "content": "为什么已经排好序的两个短数组能用双指针合并？拿 [1,4] 和 [2,3] 一步一步举例。"}
+    ],
+    "followups": [
+      {"after_seconds": 30, "content": "第四步我没跟上。是重新开始找，还是接着从当前位置比？"},
+      {"after_seconds": 90, "content": "好，这下懂了。讲得比我那张笔记清楚。"}
+    ]
+  },
+  {
+    "id": "clarify_without_old_topic",
+    "time": "2026-11-07 21:10:00",
+    "feeling": "有一点困，想把刚才没讲清的意思讲清",
+    "intent": "先解释自己刚才那句",
+    "mode": "remote",
+    "history": [
+      {"role": "user", "content": "归并排序怎么分块？"},
+      {"role": "assistant", "content": "先把数组不断对半分，再从小块开始合并。"},
+      {"role": "user", "content": "回来啦，晚上好。"},
+      {"role": "assistant", "content": "晚上好，刚刚差点把枕头当成手机架。"},
+      {"role": "user", "content": "啊？你刚说什么？"}
+    ]
+  },
+  {
+    "id": "greeting_after_technical_topic",
+    "time": "2026-11-07 21:10:00",
+    "feeling": "轻松，乐意接一下玩笑",
+    "intent": "和回来的对方打招呼",
+    "mode": "remote",
+    "history": [
+      {"role": "user", "content": "那回头再说归并排序。"},
+      {"role": "assistant", "content": "行，什么时候想聊再说。"},
+      {"role": "user", "content": "晚上好呀，汪。"}
+    ]
+  },
+  {
     "id": "teasing",
     "time": "2026-11-07 21:30:00",
     "feeling": "被打趣了一下，有点不好意思，也觉得好笑",

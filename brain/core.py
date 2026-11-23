@@ -5,6 +5,7 @@ from core.event_bus import EventBus, Event
 from persona.state_manager import StateManager
 import threading
 import logging
+import time
 from memory.memory_process import Hippocampus
 import json
 import uuid
@@ -14,6 +15,8 @@ from core.turns import TurnCancelled, TERMINAL
 from core.errors import public_error
 from core.service_policy import call_scope
 from brain.dialogue_context import build_dialogue_messages
+from brain import activity_answer, reply_evidence
+from core.model_errors import classify
 from core.proactive import delivery_rules, ProactivePolicy
 from core.proactive_events import EventProactivePolicy, ordinary_offer
 from tools.processor import ToolCallProcessor
@@ -182,12 +185,12 @@ class Brain:
             turn.check()
             if not metadata.get('retry_state_prepared'):
                 self.state_manager.prepare_dialogue(user_message)
+            turn.mark('state_ready')
             turn.check()
 
-            # 异步更新 base_prompt（不阻塞 LLM 调用）
-            # 注：实际注入到消息中是在 _llm_speak 中完成的
+            # Foreground and proactive turns select their prompt at entry.
             self.memory.update_base_prompt(
-                self.tool_processor.build_system_prompt_with_tools(settings.SYSTEM_PROMPT)
+                self.tool_processor.build_system_prompt_with_tools(settings.DIALOGUE_REPLY_PROMPT)
             )
 
             self._llm_speak(self.memory, pack=True, turn=turn)
@@ -207,6 +210,9 @@ class Brain:
 
     def _emit_turn_finished(self, turn):
         if turn and turn.status in TERMINAL:
+            turn.mark('released')
+            logger.info('turn timings source=%s status=%s reply_requests=%s offsets_ms=%s',
+                        turn.source, turn.status, turn.reply_requests, turn.timings_ms)
             turn.release()
             self.event_bus.publish(Event('turn.finished', turn.snapshot()))
 
@@ -216,7 +222,6 @@ class Brain:
         raw = self.tool_processor.remove_tool_calls(turn.partial)
         raw = re.sub(r'<(?:tool|tool_call)>[\s\S]*$', '', raw, flags=re.IGNORECASE)
         _, speech = extract_thought_and_speech(raw)
-        speech = re.sub(r'</?response>', '', speech, flags=re.IGNORECASE).strip()
         if speech:
             try:
                 self.memory.add_message('assistant', speech, timestamp=turn.timestamp,
@@ -228,11 +233,15 @@ class Brain:
 
     def _stream_reply(self, messages, turn):
         turn.check()
+        turn.reply_requests += 1
+        turn.mark('reply_request')
         stream = self.llm_client.stream_chat(model_config=settings.LARGE_LLM, messages=messages,
             call_type='proactive' if turn.source == 'proactive' else 'dialogue', cancel_token=turn)
         try:
             for chunk in stream:
                 turn.check()
+                if chunk.strip():
+                    turn.mark('first_model_text')
                 turn.partial += chunk
                 yield chunk
             turn.check()
@@ -263,6 +272,84 @@ class Brain:
             if own_turn:
                 self._emit_turn_finished(turn)
 
+    def _select_reply_sources(self, query, candidates, turn):
+        turn.check()
+        started = time.monotonic()
+        try:
+            raw = self.llm_client.select_recall_sources(reply_evidence.selector_messages(query, candidates), turn)
+            turn.check()
+            selected = reply_evidence.resolve_selection(raw, candidates)
+            logger.info('Dialogue source selection count=%d elapsed_ms=%d', len(selected),
+                        round((time.monotonic() - started) * 1000))
+            return selected
+        except TurnCancelled:
+            raise
+        except Exception as exc:
+            code, _ = classify(exc)
+            logger.info('Dialogue source selection fallback cause=%s elapsed_ms=%d', code,
+                        round((time.monotonic() - started) * 1000))
+            return None
+
+    def _dated_name_reply(self, query, request, turn):
+        date, cutoff, subject = request
+        turn.check()
+        turn.set_phase('tools')
+        calls = [{'name': 'memory_query', 'parameters': {
+            'query': query, 'keywords': [subject]}}]
+        try:
+            results = self.tool_processor.execute_tool_calls(calls, caller='Brain._dated_name_reply',
+                                                            cancel_check=turn.check)
+        except TurnCancelled:
+            raise
+        except Exception as exc:
+            code, _ = classify(exc)
+            logger.info('Dated archive lookup unavailable cause=%s', code)
+            results = []
+        turn.check()
+        turn.mark('tools_done')
+        if results:
+            self.event_bus.publish(Event('tool.executed', {'calls': calls, 'results': results, 'iteration': 1}))
+        source = reply_evidence.dated_archive_sources(results, date, cutoff)
+        name = reply_evidence.explicit_name(source, subject)
+        return (f'“{name}”。' if name else
+                '那天你给它起的名字，我没找到能核对的原话。')
+
+    def _activity_reply(self, answer, colors, turn):
+        if not colors:
+            return answer
+        try:
+            raw = self.llm_client.select_activity_color(
+                activity_answer.color_messages(colors, settings.CORE_PERSONA), turn)
+            turn.check()
+            choice = activity_answer.color_choice(raw, colors)
+        except TurnCancelled:
+            raise
+        except Exception as exc:
+            code, _ = classify(exc)
+            logger.info('Activity color preference fallback cause=%s', code)
+            choice = colors[0]
+        return f'我选{choice}。{answer}'
+
+    def _finish_reply(self, text, turn):
+        text = validate_and_fix_llm_output(text)
+        turn.mark('body_ready')
+        turn.finish('completed')
+        try:
+            self.memory.add_message("assistant", text, timestamp=turn.timestamp, message_id=turn.message_id,
+                                    turn_source=turn.source)
+            turn.mark('short_memory_done')
+        except Exception as exc:
+            logger.error(f"保存消息失败: {exc}")
+        self.event_bus.publish(Event('llm.finished', {'text': text, 'message_id': turn.message_id,
+                                                    'timestamp': turn.timestamp, 'turn_id': turn.id}))
+
+    def _deliver_grounded_reply(self, text, turn):
+        turn.check()
+        turn.set_phase('generating')
+        turn.partial = text
+        self.event_bus.publish(Event('llm.chunk', {'text': text, 'turn_id': turn.id}))
+        self._finish_reply(text, turn)
+
     def _generate_reply(self, memory, pack, memories, proactive, turn):
         # 立即发布 llm.started 事件，让前端尽早显示"正在思考"
         turn.check()
@@ -280,9 +367,41 @@ class Brain:
 
         # Preserve actual dialogue roles on both legacy and normal entry paths.
         # Dynamic facts belong to the system context, never a fake user transcript.
-        messages = build_dialogue_messages(system_prompt, history, self.state_manager.prompt_injection,
-            self.event_bus.logical_now, proactive=proactive,
+        now = self.event_bus.logical_now
+        user_message = history[-1].get('content') if not proactive and history and history[-1].get('role') == 'user' else ''
+        if settings.DIALOGUE_ACTIVITY_EVIDENCE and isinstance(self.state_manager, StateManager):
+            activity = activity_answer.supported_question(user_message)
+            if activity:
+                answer, colors = activity
+                self._deliver_grounded_reply(self._activity_reply(answer, colors, turn), turn)
+                return
+        use_recall_evidence = settings.DIALOGUE_RECALL_EVIDENCE and not proactive
+        query, candidates = reply_evidence.recall_candidates(history, now) if use_recall_evidence else ('', {})
+        selected = self._select_reply_sources(query, candidates, turn) if candidates else []
+        if query:
+            request = reply_evidence.standalone_name_request(query, history, now)
+            if request is not None:
+                local_name = reply_evidence.explicit_name(candidates.values(), request[2])
+                if local_name or selected == []:
+                    answer = f'“{local_name}”。' if local_name else self._dated_name_reply(query, request, turn)
+                    self._deliver_grounded_reply(answer, turn)
+                    return
+            quote = reply_evidence.requested_quote(query, selected)
+            if quote is not None:
+                self._deliver_grounded_reply(quote, turn)
+                return
+        if isinstance(self.state_manager, StateManager):
+            state_context = (self.state_manager.build_reply_context(now, user_message=user_message)
+                             if settings.DIALOGUE_ACTIVITY_EVIDENCE and isinstance(user_message, str) and user_message
+                             else self.state_manager.build_reply_context(now))
+        else:
+            state_context = self.state_manager.prompt_injection
+        messages = build_dialogue_messages(system_prompt, history, state_context, now, proactive=proactive,
             proactive_instruction=settings.IDLE_SPEAKING_UPDATE_PROMPT + delivery_rules(self.event_bus), memories=memories)
+        excerpt = (reply_evidence.NO_DATED_SOURCE if query and not candidates
+                   else reply_evidence.history_excerpt(selected))
+        if excerpt:
+            messages[0]['content'] += excerpt
         offer = getattr(self, '_active_proactive_offer', None) if proactive else None
         if offer:
             messages[0]['content'] += '\n【本轮主动事件：程序记录】' + json.dumps(offer, ensure_ascii=False) + '\n围绕该事件自然开口，按内容说完整；不将提醒或计时解释成用户已经完成活动。'
@@ -332,6 +451,7 @@ class Brain:
                 tool_results = self.tool_processor.execute_tool_calls(
                     tool_calls, caller=f"Brain._llm_speak[iter{iteration}]", cancel_check=turn.check
                 )
+                turn.mark('tools_done')
                 turn.check()
 
                 # 格式化工具结果
@@ -357,11 +477,18 @@ class Brain:
                     )
 
                     # 构建包含工具结果的新消息
+                    followup = (reply_evidence.tool_followup(tool_results_text, tool_results, excerpt)
+                                if use_recall_evidence else
+                                f"{tool_results_text}\n\n【重要】你现在已经获取了所需的信息，请立刻生成你的回复。\n【重要】不要再调用任何工具！直接根据工具结果和提示词要求生成回复！")
+                    if (settings.DIALOGUE_ACTIVITY_EVIDENCE and not proactive
+                            and ('【本轮可核实的活动字段】' in state_context or '【程序已记录的活动进度】' in state_context)):
+                        followup += ('\n沿用本轮活动证据中的已确认与未知字段。旧回执不能确认当前物件细节，'
+                                     '不要为了说明不确定而补写未记录的摆放、动作、页数或剩余时间。')
                     current_messages = current_messages + [
                         {"role": "assistant", "content": full_content},
                         {
                             "role": "user",
-                            "content": f"{tool_results_text}\n\n【重要】你现在已经获取了所需的信息，请立刻生成你的回复。\n【重要】不要再调用任何工具！直接根据工具结果和提示词要求生成回复！",
+                            "content": followup,
                         },
                     ]
 
@@ -432,18 +559,4 @@ class Brain:
                 logger.warning("[Tool] 重试后仍有工具标签，强制清理")
                 full_content = self.tool_processor.remove_tool_calls(full_content)
 
-            # 修复可能不完整的标签
-            full_content = validate_and_fix_llm_output(full_content)
-
-            logger.info(f"LLM回复: {full_content[:100]}...")
-            turn.finish('completed')
-
-            try:
-                self.memory.add_message("assistant", full_content, timestamp=timestamp, message_id=message_id,
-                    turn_source=turn.source)
-            except Exception as e:
-                logger.error(f"保存消息失败: {e}")
-
-            self.event_bus.publish(
-                Event(name="llm.finished", data={"text": full_content, 'message_id': message_id, 'timestamp': timestamp, 'turn_id': turn.id})
-            )
+            self._finish_reply(full_content, turn)

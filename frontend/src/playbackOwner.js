@@ -25,7 +25,7 @@ export class PlaybackOwner {
   async claim(manual = false) {
     if (this.closed) return false;
     if (this.releaseLock) return true;
-    // Web Locks is absent on HTTP LAN pages and in some mobile browsers.
+    // Web Locks is unavailable in some browser contexts.
     if (!navigator.locks) return this.claimLease(manual);
     if (manual) {
       this.channel?.postMessage({ type: 'takeover', id: this.id });

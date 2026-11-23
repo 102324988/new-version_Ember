@@ -28,6 +28,8 @@ def main():
         key[name] = {}
         for label, item in zip(('A', 'B'), pair):
             text.extend(['### ' + label, '', item['reply'], ''])
+            for exchange in item.get('followups', []):
+                text.extend(['用户：' + exchange['user'], '', '角色：' + exchange['reply'], ''])
             key[name][label] = item['version']
     target = args.report.parent
     (target/'blind-review.md').write_text('\n'.join(text), encoding='utf-8')

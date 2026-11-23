@@ -50,7 +50,7 @@ try {
   await page.screenshot({ path: resolve(output, 'focus-live2d.png'), fullPage: true });
   await page.emulateMedia({ colorScheme: 'dark' });
   await page.screenshot({ path: resolve(output, 'focus-dark.png'), fullPage: true });
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.screenshot({ path: resolve(output, 'focus-mobile-live2d.png'), fullPage: true });
+  await page.setViewportSize({ width: 768, height: 844 });
+  await page.screenshot({ path: resolve(output, 'focus-compact-desktop.png'), fullPage: true });
   console.log(JSON.stringify({ result: 'captured', sceneVariants: 9, focusVariants: 3 }));
 } finally { await browser?.close(); await server.close(); }

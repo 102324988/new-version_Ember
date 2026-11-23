@@ -111,9 +111,7 @@ class MemoryQueryTool(BaseTool):
         if not keywords:
             return ToolResult.fail("缺少关键词 (keywords)")
 
-        logger.info(
-            f"[MemoryQuery] 开始检索: query='{query[:50]}...', keywords={keywords}"
-        )
+        logger.info("[MemoryQuery] 开始检索 query_chars=%d keyword_count=%d", len(query), len(keywords))
 
         # 调用统一的检索方法
         result = self.hippocampus.query_memory(

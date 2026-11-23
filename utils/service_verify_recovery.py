@@ -65,10 +65,20 @@ def main():
                 time.sleep(1)
         raise AssertionError('Synthetic service did not recover')
 
+    def history_when_unpaused():
+        deadline = time.monotonic() + 20
+        while True:
+            try:
+                return request('/history')
+            except AssertionError as error:
+                if error.args != (('/history', 409, 200),) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(.3)
+
     wait_ready()
     code = (ROOT / 'output/service-verify/private/owner-code.txt').read_text().strip()
     request('/auth/login', {'access_code': code, 'label': '恢复验证'})
-    before = request('/history')
+    before = history_when_unpaused()
     assert before, 'Run the browser conversation check first'
     # Real database outage; always restart ONLY this project's database.
     try:
@@ -78,7 +88,7 @@ def main():
     finally:
         run(COMPOSE + ['start', 'postgres'])
     wait_ready()
-    assert [m['message_id'] for m in request('/history')] == [m['message_id'] for m in before]
+    assert [m['message_id'] for m in history_when_unpaused()] == [m['message_id'] for m in before]
 
     def archive(operation, slot):
         deadline = time.monotonic() + 90
@@ -105,7 +115,7 @@ def main():
     after = request('/config')
     assert after['epoch'] != old_epoch
     assert request('/auth/session')['authenticated']
-    assert [m['message_id'] for m in request('/history')] == [m['message_id'] for m in before]
+    assert [m['message_id'] for m in history_when_unpaused()] == [m['message_id'] for m in before]
     assert after['experience']['materials']
 
     # Copy the newest committed SQL backup through memory, never print its data.
@@ -114,7 +124,8 @@ def main():
         "p=max(Path('service/backups').glob('control_*.sql'),key=lambda p:p.stat().st_mtime); "
         "sys.stdout.buffer.write(p.read_bytes())"])
     sections = re.findall(rb'^COPY ember_service\.(\w+) \(([^)]+)\) FROM stdin;\n(.*?)^\\\.\r?$', dump, re.S | re.M)
-    assert {table.decode() for table, _, _ in sections} == {'sessions', 'login_attempts', 'jobs', 'usage'}
+    tables = {table.decode() for table, _, _ in sections}
+    assert {'sessions', 'login_attempts', 'jobs', 'usage', 'circuits', 'usage_blocks'} <= tables
     database = 'ember_test_service_restore_' + uuid.uuid4().hex
     assert re.fullmatch(r'ember_test_service_restore_[a-f0-9]{32}', database)
     created = False
@@ -124,6 +135,9 @@ def main():
         created = True
         run(['docker', 'exec', '-i', PG, 'psql', '-X', '-U', 'ember_service', '-d', database,
              '-v', 'ON_ERROR_STOP=1'], dump)
+        restored_tables = run(['docker', 'exec', PG, 'psql', '-X', '-At', '-U', 'ember_service',
+            '-d', database, '-c', "SELECT tablename FROM pg_tables WHERE schemaname='ember_service'"]).decode().splitlines()
+        assert set(restored_tables) == tables, 'Backup and restored control schema have different table coverage'
         for table, columns, content in sections:
             name = table.decode()
             # Compare every restored COPY row with the committed snapshot.

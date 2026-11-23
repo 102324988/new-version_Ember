@@ -4,6 +4,8 @@ import json
 import threading
 import os
 import hashlib
+import time
+from urllib.parse import urlsplit
 import httpx
 from core.service_policy import reserve, finish
 from json_repair import repair_json
@@ -30,6 +32,7 @@ class LLMClient:
     _instance = None
     _lock = threading.Lock()
     _background_slot = threading.BoundedSemaphore(1)
+    _recall_slot = threading.BoundedSemaphore(1)
 
     @staticmethod
     def _provider(model):
@@ -53,19 +56,42 @@ class LLMClient:
         Only the outer worker can commit data. A late network result is ignored.
         The slot stays held until the actual HTTP call exits.
         """
-        if not self._background_slot.acquire(blocking=False):
-            raise ModelCallError('background_busy')
+        return self._bounded_request(request, timeout, self._background_slot, 'ember-memory-http',
+                                     'background_busy', **kwargs)
+
+    def _bounded_request(self, request, timeout, slot, name, busy_code, *, cancel_token=None, **kwargs):
+        if cancel_token:
+            cancel_token.check()
+        if not slot.acquire(blocking=False):
+            raise ModelCallError(busy_code)
         done, result = threading.Event(), {}
         def run():
             try:
+                if cancel_token:
+                    cancel_token.check()
                 result['value'] = request(timeout=self._timeouts(timeout), **kwargs)
             except Exception as error:
                 result['error'] = error
             finally:
-                self._background_slot.release()
+                slot.release()
                 done.set()
-        threading.Thread(target=run, daemon=True, name='ember-memory-http').start()
-        if not done.wait(timeout):
+        worker = threading.Thread(target=run, daemon=True, name=name)
+        started = time.monotonic()
+        try:
+            worker.start()
+        except Exception:
+            slot.release()
+            raise
+        if cancel_token:
+            while True:
+                cancel_token.check()
+                remaining = timeout - (time.monotonic() - started)
+                if remaining <= 0:
+                    raise ModelCallError('timeout')
+                if done.wait(min(.05, remaining)):
+                    cancel_token.check()
+                    break
+        elif not done.wait(timeout):
             raise ModelCallError('timeout')
         if 'error' in result:
             raise result['error']
@@ -241,6 +267,46 @@ class LLMClient:
                         raise ModelCallError(code, retry_at) from None
                     return None
         return None
+
+    def select_recall_sources(self, messages, turn):
+        return self._dialogue_json(messages, turn, 'dialogue_source_selection')
+
+    def select_activity_color(self, messages, turn):
+        return self._dialogue_json(messages, turn, 'dialogue_color_preference')
+
+    def _dialogue_json(self, messages, turn, call_type):
+        """One small-model call. A late result never reaches the reply turn."""
+        turn.check()
+        model = settings.SMALL_LLM
+        host = urlsplit(model.base_url).hostname
+        thinking = {'thinking': {'type': 'disabled'}} if host == 'api.deepseek.com' else {'enable_thinking': False}
+        ticket = reserve('chat', model.name, call_type, provider=self._provider(model))
+        usage = None
+        status, code = 'failed', ''
+        try:
+            response = self._bounded_request(
+                self.small_client.chat.completions.create, 2.0, self._recall_slot,
+                'ember-recall-http', 'selector_busy', cancel_token=turn,
+                model=model.name, messages=messages, stream=False, temperature=0, max_tokens=96,
+                response_format={'type': 'json_object'}, extra_body=thinking,
+            )
+            usage = getattr(response, 'usage', None)
+            choice = response.choices[0]
+            content = choice.message.content
+            if choice.finish_reason != 'stop' or not isinstance(content, str):
+                raise ModelCallError('invalid_result')
+            status = 'completed'
+            return content
+        except TurnCancelled:
+            status = 'interrupted'
+            raise
+        except Exception as exc:
+            code, _ = classify(exc)
+            if code == 'selector_busy':
+                status = 'not_sent'
+            raise ModelCallError(code) from None
+        finally:
+            finish(ticket, usage, status=status, error_code=code)
 
     def stream_chat(self, model_config, messages, call_type: str = "dialogue", cancel_token=None):
         """流式对话

@@ -88,13 +88,17 @@ class Hippocampus:
         with self._encode_lock, call_scope('background', 'memory-encode'):
             self._encode_once()
 
+    @staticmethod
+    def _encoding_config(prompt):
+        return hashlib.sha256((fingerprint(settings.LARGE_LLM) + FORMAT_REVISION + prompt
+            + os.getenv('EMBER_MEMORY_INPUT_BUDGET', '16000')).encode()).hexdigest()
+
     def _encode_once(self):
         batch, generation = None, self._generation
         prompt = settings.MEMORY_ENCODING_PROMPT + SOURCE_RULES
         # A fixed formatter/configuration must get a fresh attempt, including
         # old preflight failures that never created an encoding checkpoint.
-        config = hashlib.sha256((fingerprint(settings.LARGE_LLM) + FORMAT_REVISION + prompt
-            + os.getenv('EMBER_MEMORY_INPUT_BUDGET', '16000')).encode()).hexdigest()
+        config = self._encoding_config(prompt)
         try:
             with self.event_bus.operation_lock:
                 if self.event_bus.paused or self.event_bus.world_paused or self.event_bus.pending_dialogues:
@@ -185,7 +189,7 @@ class Hippocampus:
     @staticmethod
     def _sources(text):
         result = []
-        for line in text.splitlines():
+        for line in text.split('\n'):
             try:
                 row = json.loads(line)
             except (ValueError, TypeError):
@@ -202,7 +206,7 @@ class Hippocampus:
     def _validate_memories(self, raw, sources, text):
         source_map = {x['message_id']: x for x in sources}
         has_legacy = False
-        for line in text.splitlines():
+        for line in text.split('\n'):
             try:
                 row = json.loads(line)
                 has_legacy |= isinstance(row, dict) and row.get('source_type') == 'role_state'
@@ -296,11 +300,22 @@ class Hippocampus:
             return
         try:
             data = self.working.snapshot()
+            if data.get('manual_paused'):
+                return
+            if data['jobs']:
+                self._on_preprocess_request(Event('memory.preprocess', {'reason': 'checkpoint'}))
+                return
+            if not retry_ready(data.get('encoding_retry', {}),
+                    self._encoding_config(settings.MEMORY_ENCODING_PROMPT + SOURCE_RULES)):
+                return
+            if data['requested']:
+                self._on_preprocess_request(Event('memory.preprocess', {'reason': 'checkpoint'}))
+                return
             text = self._load_experience()
             sources = self._sources(text)
-            legacy = any(line.strip() and not line.lstrip().startswith('{') for line in text.splitlines())
+            legacy = any(line.strip() and not line.lstrip().startswith('{') for line in text.split('\n'))
             important = any(self._important(x) for x in sources)
-            if (data['jobs'] or data['requested'] or important or len(sources) >= settings.MEMORY_ENCODE_MESSAGES or
+            if (important or len(sources) >= settings.MEMORY_ENCODE_MESSAGES or
                     ((sources or legacy) and time.monotonic() - self._last_encoded >= settings.MEMORY_ENCODE_INTERVAL)):
                 self._on_preprocess_request(Event('memory.preprocess', {'reason': 'checkpoint'}))
         finally:
@@ -384,7 +399,7 @@ class Hippocampus:
         # 从 keywords 中筛选可能的实体名（长度>=2的专有名词）
         potential_entities = entities or [kw for kw in keywords if len(kw) >= 2]
 
-        logger.info(f"[query_memory] query='{query[:50]}...', keywords={keywords}")
+        logger.info("[query_memory] query_chars=%d keyword_count=%d", len(query), len(keywords))
 
         try:
             # 并行检索：向量检索 + 图谱查询

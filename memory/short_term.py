@@ -1,7 +1,6 @@
 import json
 import threading
 import os
-import re
 import copy
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -9,15 +8,6 @@ from brain.tag_utils import extract_thought_and_speech
 from config.settings import settings
 from memory.working_memory import WorkingMemory
 from memory.journal import append_log, LOG_LOCK
-
-
-def separate_thought_and_speech(text):
-    """分离 thought 和 speech（使用增强的容错处理）"""
-    thought, speech = extract_thought_and_speech(text)
-    # 如果没有提取到 speech，返回原始文本
-    if not speech:
-        speech = text.strip()
-    return thought, speech
 
 
 class ShortTermMemory:

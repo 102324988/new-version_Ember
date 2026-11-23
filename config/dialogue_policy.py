@@ -1,6 +1,7 @@
 """Versioned expression preferences; never rewrites a user's persona file."""
 
 VERSIONS = ('legacy', 'expressive_v1')
+RHYTHMS = ('baseline', 'turn_v1')
 STYLE_DEFAULTS = {'symbols': 'occasional', 'actions': 'natural', 'length': 'adaptive'}
 STYLE_CHOICES = {'symbols': ('occasional', 'none'), 'actions': ('natural', 'none'),
                  'length': ('adaptive', 'brief', 'expansive')}
@@ -51,9 +52,16 @@ def adapt_idle_prompt(text, version):
         '实际网页投递由程序条件决定；故事空间只约束动作，不代表关系陌生。')
 
 
-def compile_persona(core_persona, system_prompt, version, style=None):
+def validate_rhythm(rhythm):
+    if rhythm not in RHYTHMS:
+        raise ValueError('EMBER_DIALOGUE_RHYTHM 必须是 baseline 或 turn_v1')
+    return rhythm
+
+
+def compile_persona(core_persona, system_prompt, version, style=None, *, rhythm='baseline'):
     """Returns effective text plus adaptation count, leaving source YAML intact."""
     style = validate_policy(version, style)
+    validate_rhythm(rhythm)
     text = core_persona + system_prompt
     if version == 'legacy':
         return text, 0
@@ -66,6 +74,9 @@ def compile_persona(core_persona, system_prompt, version, style=None):
     length = {'adaptive': '长度随话题和情绪变化，可以一句，也可以认真说一段；无固定句数。',
               'brief': '默认简洁；需要解释或认真交流时可以展开。',
               'expansive': '允许多讲细节和想法，仍留出对方接话的空间。'}[style['length']]
+    if rhythm == 'turn_v1' and style['length'] == 'adaptive':
+        length = ('按眼前这句话接话。问候、玩笑或道别可以自然来回；对方在问“什么意思”时，先用直白的话重说刚才没讲清的那一点。'
+                  '解释难题或认真讨论时说完整，换一个意思可以另起一句。')
     text += ('\n【表达偏好 expressive_v1】\n以下为默认偏好；自定义人设中明确的表达风格优先，事实与能力边界始终保留。'
         + length + symbols + actions
         + '\n允许玩笑、犹豫、直接不同意、短暂不快和有原因的委屈，情绪不要求每轮归零。'

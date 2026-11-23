@@ -3,6 +3,7 @@ import copy
 import hashlib
 import json
 import math
+import re
 import uuid
 from datetime import datetime
 from core.time_utils import get_timezone
@@ -227,3 +228,29 @@ def context(state, now=None):
         'beliefs 和情绪只代表角色的理解，不是用户事实；打算与已经发生的事件分开。'
         '\n个人往事的可用来源：已提供档案、带来源的记忆和上述事件。其他具体往事尚未设定；'
         '兴趣起源不明时可以谈喜欢的理由或泛指体验，不用补一个首次观察、上次调试等具体故事。')
+
+
+def notes_progress_context(state, now, user_message):
+    if not re.search(r'进度|进展|还在|在忙|在做|多久|弄好|收好|收完|整理到|放(?:了|好|进)|完成|空的|几[张页]|里面|夹里',
+                     user_message):
+        return ''
+    activity = load_continuity(state)['activity']
+    if not re.search(r'蓝(?:色)?(?:文件)?夹|笔记', user_message) and not (
+            activity and re.search(r'夹子|纸页|整理到|收好|收完', user_message)):
+        return ''
+    stamp = None
+    if activity and activity['anchor'] <= now:
+        try:
+            stamp = datetime.fromtimestamp(activity['anchor'], get_timezone()).isoformat()
+        except (OverflowError, OSError, ValueError):
+            pass
+    evidence = {
+        '记录范围': '角色自己的笔记整理流程，虚构世界程序记录',
+        '流程状态': activity['status'] if stamp is not None else None,
+        '记录时刻': stamp,
+        '蓝夹是否已收好': None, '已核实放入页数': None, '具体收好时刻': None,
+    }
+    return ('\n【本轮可核实的活动字段】' + json.dumps(evidence, ensure_ascii=False)
+            + '\nnull 表示这项没有核实。整理流程的状态、预计时长和目标只说明整体活动，'
+              '不能推断蓝夹已收好、尚未收好、为空或何时收好。可直接采用本轮用户明确提供的可信事实。'
+              '仅回答用户问到的细项，证据不足就自然说明未知，不补写蓝夹的摆放、查阅动作或具体笔记内容。\n')

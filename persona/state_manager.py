@@ -503,9 +503,13 @@ class StateManager:
 
     @property
     def prompt_injection(self):
-        return (
-            f"\n【角色当前状态与事实来源】\n{self.reply_state_zip}\n"
-            f"【当前准确时间】{self.event_bus.formatted_logical_now}；{time_period(self.event_bus.logical_now)}\n"
+        return self.build_reply_context(self.event_bus.logical_now)
+
+    def build_reply_context(self, now, *, user_message=''):
+        """Render one timestamp across all facts in the same model request."""
+        context = (
+            f"\n【角色当前状态与事实来源】\n{self._reply_state_zip(now)}\n"
+            f"【当前准确时间】{self.event_bus.format_logical_time(now)}；{time_period(now)}\n"
             "事实优先级：系统时钟和结构化场景 > 本轮明确输入 > 带时间的历史 > 时间未知的旧历史。"
             "活动若标记 inferred 或 needs_confirmation，只是推演或待确认。不能假装知道用户位置，"
             "本轮用户明确自述属于新事实；长期记忆未命中不能否定本轮自述。"
@@ -520,9 +524,16 @@ class StateManager:
             "共同注意的对象必须有来源：能引用消息原文、用户提供的图片内容、已提交的活动材料或工具结果。"
             "远程时双方不自动共看同一页纸；没有共享材料时，不用‘你看这里/是不是这里’假装指给对方看。"
             "未提供的题目、代码、书页细节保持未知，可以提出猜测或自然请对方发原文，不假称已定位或读到。\n"
-            + (self.event_bus.experience.prompt_context() if hasattr(self.event_bus, 'experience') else '')
-            + (self.short_term_memory.working.prompt_context() if hasattr(self.short_term_memory, 'working') else '')
         )
+        experience = getattr(self.event_bus, 'experience', None)
+        progress = user_message if settings.DIALOGUE_ACTIVITY_EVIDENCE else ''
+        if experience is not None:
+            context += experience.prompt_context(progress_query=progress) if progress else experience.prompt_context()
+        if hasattr(self.short_term_memory, 'working'):
+            context += self.short_term_memory.working.prompt_context()
+        if progress:
+            context += continuity.notes_progress_context(self.current_state, now, progress)
+        return context
 
     @property
     def state_zip_full(self):
@@ -530,6 +541,9 @@ class StateManager:
 
     @property
     def reply_state_zip(self):
+        return self._reply_state_zip(self.event_bus.logical_now)
+
+    def _reply_state_zip(self, now):
         state = self.current_state
         context = (f"[状态 {state.get('对应时间', '')} | P:{state.get('P', 5)} A:{state.get('A', 5)} D:{state.get('D', 5)}]\n"
             f"情境:{state.get('客观情境', '')}\n目标:{state.get('近期目标', '')}\n"
@@ -537,12 +551,12 @@ class StateManager:
             f"来源:{state.get('state_source', 'legacy')}；场景状态:{state.get('scene_status', 'pending')}\n"
             "状态是背景与候选意图，不是本轮对白脚本；优先回应用户当前的话。")
         if settings.DIALOGUE_POLICY == 'expressive_v1':
-            view = current_reply_view(state, self.event_bus.logical_now)
+            view = current_reply_view(state, now)
             if view:
                 context += ('\n【当前角色视角：主观感受与候选意图】\n' + json.dumps(view, ensure_ascii=False)
                     + '\n可自然流露或改变表达，不必复述。感受不等于用户意图，打算不等于已完成。')
         if settings.ROLE_CONTINUITY_ENABLED:
-            context += continuity.context(state, self.event_bus.logical_now)
+            context += continuity.context(state, now)
         return context
 
     @property

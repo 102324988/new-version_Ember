@@ -8,7 +8,7 @@ export default function AuthGate() {
   const [session, setSession] = useState(null);
   const [error, setError] = useState('');
   const [accessCode, setAccessCode] = useState('');
-  const [label, setLabel] = useState(/Mobile|Android/i.test(navigator.userAgent) ? '我的手机' : '我的电脑');
+  const [label, setLabel] = useState('我的电脑');
   const [working, setWorking] = useState(false);
   const [retry, setRetry] = useState(0);
   useEffect(() => {

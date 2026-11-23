@@ -178,6 +178,7 @@ try {
   await page.getByRole('button', { name: '先合上，下次继续', exact: true }).click();
   await page.reload();
   await page.getByRole('button', { name: '一起做点事', exact: true }).click();
+  await page.getByText('停在「面对变化」，已留下 1 份材料。继续后从这一步接上。', { exact: true }).waitFor();
   await page.getByRole('button', { name: '继续这份手册', exact: true }).click();
   await page.getByRole('button', { name: /补充核对/ }).click();
   await page.getByLabel('这一页的标题').fill('保留疑问的这一页');
@@ -193,11 +194,11 @@ try {
   assert.equal(experience.projects[0].note, '下次继续查证');
   await page.getByRole('dialog').evaluate(element => { element.scrollTop = 0; });
   await page.screenshot({ path: resolve(root, 'test-results', 'shared-project-desktop.png'), fullPage: true });
-  await page.setViewportSize({ width: 320, height: 900 });
+  await page.setViewportSize({ width: 768, height: 900 });
   await page.getByRole('dialog').evaluate(element => { element.scrollTop = 0; });
   const bookSize = await page.getByRole('dialog').evaluate(element => [element.clientWidth, element.scrollWidth]);
   assert.ok(bookSize[1] <= bookSize[0] + 1, 'shared page must fit a small screen');
-  await page.screenshot({ path: resolve(root, 'test-results', 'shared-project-mobile.png'), fullPage: true });
+  await page.screenshot({ path: resolve(root, 'test-results', 'shared-project-compact-desktop.png'), fullPage: true });
   await page.setViewportSize({ width: 1366, height: 900 });
   await page.keyboard.press('Escape');
   await page.getByRole('textbox', { name: '对依鸣说' }).fill('旧世界的草稿');
@@ -243,7 +244,7 @@ try {
   assert.ok(await page.evaluate(() => window.audioPaused) > 0);
   await second.close();
   const responsive = [];
-  for (const width of [320, 390, 768, 1366, 1920]) {
+  for (const width of [768, 1060, 1366, 1920]) {
     await page.setViewportSize({ width, height: 900 });
     for (const view of ['舞台优先', '对话优先', '专注陪伴']) {
       await page.getByRole('button', { name: view, exact: true }).click();

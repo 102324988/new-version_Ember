@@ -370,16 +370,15 @@ class EpisodicMemory:
                 cur.execute(
                     """
                     UPDATE episodic_memory
-                    SET clarity = clarity * exp(
+                    SET clarity = GREATEST(0.01, clarity * exp(
                             -%s / (1.0 + ln(1.0 + access_count))
-                        )
+                        ))
                     WHERE clarity > 0.01
                     """,
                     (settings.MEMORY_DECENT_FACTOR,),
                 )
-                cur.execute("DELETE FROM episodic_memory WHERE clarity < 0.05")
                 self.conn.commit()
-                logger.info("Memory cleanup (deleted low clarity memories) completed.")
+                logger.info("Memory clarity updated; stored records retained.")
         except Exception as e:
             logger.error(f"Memory cleanup failed: {e}")
             if self.conn:

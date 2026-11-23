@@ -4,7 +4,6 @@ import time
 import logging
 import os
 import uuid
-import re
 from collections import OrderedDict
 from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
@@ -255,6 +254,7 @@ class EmberServer:
                 "time_accel_factor": self.event_bus.time_accel_factor,
                 "timezone": settings.TIMEZONE,
                 "dialogue_policy": {"version": settings.DIALOGUE_POLICY,
+                    "rhythm": settings.DIALOGUE_RHYTHM,
                     "style": settings.DIALOGUE_STYLE, "stock_adaptations": settings.DIALOGUE_ADAPTATIONS},
                 "capabilities": {"message_receipts": True, "correlated_audio": True, "cancel_turn": True,
                     'world_epoch': hasattr(self, 'protocol'), 'player_records': hasattr(self, 'experience'),
@@ -674,6 +674,7 @@ class EmberServer:
 
     async def _process_tts(self, text, *, target=None, message_id=None, request_id=None, turn_id=None, epoch=None, source=None):
         """处理 TTS，限制并发数量"""
+        requested_at = time.monotonic()
         epoch = epoch or (self.protocol.epoch if hasattr(self, 'protocol') else None)
         async def report_error(code, content):
             payload = {'type': 'tts_error', 'code': code, 'content': content,
@@ -688,7 +689,6 @@ class EmberServer:
                 await self.manager.broadcast(payload)
 
         _, text = extract_thought_and_speech(text or '')
-        text = re.sub(r'</?response>', '', text, flags=re.IGNORECASE).strip()
         if not text or not text.strip():
             if target is not None:
                 await report_error('empty_text', '这条消息没有可朗读的对白')
@@ -696,6 +696,7 @@ class EmberServer:
 
         # 使用信号量限制并发
         async with self._tts_semaphore:
+            started_at = time.monotonic()
             try:
                 # 限制文本长度，防止超长文本导致性能问题
                 max_tts_length = 500
@@ -707,7 +708,10 @@ class EmberServer:
                     base64_audio = await self.tts_manager.generate_base64(text)
                 if not base64_audio:
                     raise TTSGenerationError('no_audio', '语音服务未返回音频，请重试')
-                logger.info(f"广播 Base64 TTS 音频 (长度: {len(base64_audio)})")
+                logger.info('speech timing mode=%s queue_ms=%s audio_ready_ms=%s',
+                            'manual' if target is not None else 'automatic',
+                            round((started_at - requested_at) * 1000),
+                            round((time.monotonic() - requested_at) * 1000))
                 payload = {"type": "audio", "audio_base64": base64_audio, 'message_id': message_id, 'request_id': request_id, 'turn_id': turn_id}
                 if hasattr(self, 'protocol'):
                     payload = self.protocol.envelope(payload, epoch)

@@ -6,7 +6,7 @@ import time
 import logging
 import json
 import math
-from config.dialogue_policy import adapt_idle_prompt, adapt_stock_text, compile_persona, validate_policy
+from config.dialogue_policy import adapt_idle_prompt, adapt_stock_text, compile_persona, validate_policy, validate_rhythm
 
 logger = logging.getLogger(__name__)
 
@@ -71,9 +71,14 @@ class Settings:
     CHARACTER_NAME = os.getenv("CHARACTER_NAME", "依鸣")
     RAW_CORE_PERSONA = PROMPTS.get("core_persona", "")
     DIALOGUE_POLICY = os.getenv('DIALOGUE_POLICY', 'expressive_v1')
+    DIALOGUE_RHYTHM = validate_rhythm(os.getenv('EMBER_DIALOGUE_RHYTHM', 'baseline'))
+    DIALOGUE_RECALL_EVIDENCE = os.getenv('EMBER_DIALOGUE_RECALL_EVIDENCE', 'false').strip().lower() == 'true'
+    DIALOGUE_ACTIVITY_EVIDENCE = os.getenv('EMBER_DIALOGUE_ACTIVITY_EVIDENCE', 'false').strip().lower() == 'true'
     DIALOGUE_STYLE = validate_policy(DIALOGUE_POLICY, PROMPTS.get('dialogue_style'))
     SYSTEM_PROMPT, DIALOGUE_ADAPTATIONS = compile_persona(
         RAW_CORE_PERSONA, PROMPTS.get('system_prompt', ''), DIALOGUE_POLICY, DIALOGUE_STYLE)
+    DIALOGUE_REPLY_PROMPT = SYSTEM_PROMPT if DIALOGUE_RHYTHM == 'baseline' else compile_persona(
+        RAW_CORE_PERSONA, PROMPTS.get('system_prompt', ''), DIALOGUE_POLICY, DIALOGUE_STYLE, rhythm=DIALOGUE_RHYTHM)[0]
     CORE_PERSONA = adapt_stock_text(RAW_CORE_PERSONA)[0] if DIALOGUE_POLICY == 'expressive_v1' else RAW_CORE_PERSONA
     STATE_UPDATE_PROMPT = PROMPTS.get("state_update_prompt", "")
     GRAPH_CONSOLIDATION_PROMPT = PROMPTS.get("graph_consolidation_prompt", "")

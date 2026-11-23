@@ -7,11 +7,11 @@ from brain.tag_utils import extract_thought_and_speech
 from core.time_utils import get_timezone, time_period
 
 
-def _stamp(value):
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+def message_time(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     try:
-        return datetime.fromtimestamp(value / 1000, get_timezone())
+        return datetime.fromtimestamp(value / 1000, get_timezone()) if math.isfinite(value) else None
     except (ValueError, OverflowError, OSError):
         return None
 
@@ -37,7 +37,7 @@ def build_dialogue_messages(system_prompt, history, state_context, now, *, proac
             content = extract_thought_and_speech(content)[1]
             if not content.strip():
                 continue
-        stamp = _stamp(item.get('timestamp'))
+        stamp = message_time(item.get('timestamp'))
         relative_day = None
         if stamp:
             days = (current.date() - stamp.date()).days

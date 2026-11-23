@@ -274,6 +274,52 @@ def test_long_source_is_fragmented_but_original_acknowledged_whole(monkeypatch):
     assert all(estimated_tokens(json.dumps(x, ensure_ascii=False)) < 4000 for x in contexts)
 
 
+@pytest.mark.parametrize('width', [800, 4000])
+def test_escaped_journal_packs_final_envelope_without_consuming_later_rows(monkeypatch, width):
+    monkeypatch.setenv('EMBER_MEMORY_INPUT_BUDGET', '4000')
+    prompt = '合成整理提示'
+    extras = {'buffered_sources': [], 'previous_notes': [], 'recent_dialogue': []}
+    content = ('"\\\n' * width) + '\u2028仍然属于同一条'
+    rows = [dict(role='user', message_id='escaped', content=content),
+            dict(role='assistant', message_id='next', content='下一条保留')]
+    first, second = [json.dumps(row, ensure_ascii=False) + '\n' for row in rows]
+    prefix, contexts = make_batch(first + second, prompt, extras)
+    assert prefix == first
+    assert all(estimated_tokens(prompt + json.dumps(c, ensure_ascii=False)) <= 3500 for c in contexts)
+    output = [json.loads(c['log']) for c in contexts]
+    assert ''.join(row['content'] for row in output) == content
+    assert all(row['message_id'] == 'escaped' for row in output)
+    assert make_batch((first + second)[len(prefix):], prompt, extras)[0] == second
+
+
+def test_two_individually_fitting_escaped_lines_leave_second_for_next_batch(monkeypatch):
+    monkeypatch.setenv('EMBER_MEMORY_INPUT_BUDGET', '4000')
+    lines = [json.dumps({'role': 'user', 'message_id': key, 'content': '"' * 625}) + '\n'
+             for key in ('first', 'second')]
+    prefix, contexts = make_batch(''.join(lines), 'prompt', {})
+    assert prefix == lines[0]
+    assert [context['log'] for context in contexts] == lines[:1]
+    assert make_batch(lines[1], 'prompt', {})[0] == lines[1]
+
+
+def test_blocked_checkpoint_does_not_scan_journal_and_fixed_config_can_resume(monkeypatch):
+    bus, memory, consumer, hippo, _ = harness()
+    try:
+        config = hippo._encoding_config(settings.MEMORY_ENCODING_PROMPT + SOURCE_RULES)
+        hippo.working.request()
+        hippo.working.encoding_retry(True, 'input_budget', None, config)
+        with patch.object(hippo, '_load_experience') as read, patch.object(hippo, '_on_preprocess_request') as enqueue:
+            hippo._on_tick(Event('system.tick', {}))
+            read.assert_not_called()
+            enqueue.assert_not_called()
+            monkeypatch.setenv('EMBER_MEMORY_INPUT_BUDGET', '16001')
+            hippo._on_tick(Event('system.tick', {}))
+            read.assert_not_called()
+            enqueue.assert_called_once()
+    finally:
+        consumer.stop()
+
+
 def test_optional_context_counts_all_keys_before_filling_budget(monkeypatch):
     monkeypatch.setenv('EMBER_MEMORY_INPUT_BUDGET','16000')
     text = json.dumps({'role':'user','message_id':'budget-source','content':'合成偏好'},ensure_ascii=False)+'\n'
@@ -403,7 +449,7 @@ def test_remaining_journal_is_waiting_even_after_previous_batch_completed():
     job = memory.working.add_job('', [], [], [])
     memory.working.finish(job['id'])
     text = '尚未领取到批次的原始记录\n'
-    Path('config/chat_history.log').write_text(text, encoding='utf-8')
+    Path('config/chat_history.log').write_bytes(text.encode('utf-8'))
     status = hippo.status()
     assert status['last_success_at']
     assert status['phase'] == 'waiting'

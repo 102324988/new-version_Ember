@@ -4,6 +4,12 @@ import './SharedProjectPanel.css';
 
 const phases = ['route', 'investigate', 'compose', 'finished'];
 const steps = ['选一份材料', '面对变化', '整理这一页', '留下成果'];
+const discussion = {
+  route: '你想先看看哪份材料？',
+  investigate: '这一步，你会怎么选？',
+  compose: '这一页里，你最想留下哪个细节？',
+  finished: '现在再看，你最喜欢这一页的哪一点？',
+};
 
 function PageEditor({ project, epoch, working, onSave }) {
   const key = `ember.projectDraft.${epoch}.${project.id}.${project.version}`;
@@ -52,8 +58,9 @@ export default function SharedProjectPanel({ session, onEdit }) {
       setError(failure.message); setRetry(command);
     } finally { inFlight.current = false; setWorking(false); }
   };
-  const discuss = () => onEdit(project ? `我们一起看看“${project.title}”这一页吧。现在到“${project.view.heading}”这一步了。你对现有材料有什么想法？先讨论，不替我在界面里选择。`
-    : '要不要一起试做一页校园观察手册？我们先用虚构资料做桌面推演，不用实际出门。可以一起讨论材料、做取舍，最后留下一页作品。你愿意吗？');
+  const discuss = () => onEdit(project
+    ? `再看看《${project.title}》？${project.status === 'abandoned' ? '这些没写完的材料里，你记得哪一段？' : discussion[project.phase]}`
+    : '要不要一起试做一页校园观察手册？先用手头的虚构资料，最后留一页我们一起选出来的内容。');
   return <section className="shared-project" aria-label="共同手册">
     <div className={`project-cover${project ? ' project-cover-open' : ''}`}>
       <span className="eyebrow">A PAGE WE MAKE TOGETHER</span>
@@ -74,7 +81,11 @@ export default function SharedProjectPanel({ session, onEdit }) {
         <div className="project-heading"><h3>{project.view.heading}</h3><span>{['completed', 'abandoned'].includes(project.status) ? project.view.edition : `剩余调查步数 ${project.budget} / 3`}</span></div>
         {['active', 'paused'].includes(project.status) && <p className="muted">调查步数用于这份材料的取舍，不是现实计时。合上手册不会消耗它。</p>}
         {project.cards.length > 0 && <div className="project-cards" aria-label="已留下的材料">{project.cards.map(card => <article key={card.id}><small>{card.source}</small><h4>{card.title}</h4><p>{card.text}</p><p className="project-unknown">{card.uncertainty}</p></article>)}</div>}
-        {project.status === 'paused' ? <div className="project-event"><p>{project.pause_reason}</p><button className="primary-button" disabled={blocked} onClick={() => act({ action: 'project_resume' })}>继续这份手册</button></div> : <>
+        {project.status === 'paused' ? <div className="project-event">
+          <p>{project.pause_reason}</p>
+          <p>停在「{steps[phases.indexOf(project.phase)]}」，已留下 {project.cards.length} 份材料。继续后从这一步接上。</p>
+          <button className="primary-button" disabled={blocked} onClick={() => act({ action: 'project_resume' })}>继续这份手册</button>
+        </div> : <>
           {project.view.event && <aside className="project-event"><strong>准备落笔时，出现了一个问题</strong><p>{project.view.event}</p></aside>}
           {project.status === 'active' && project.view.choices.length > 0 && <div className="project-choices" role="group" aria-label="本步选择">{project.view.choices.map(choice => <button key={choice.id} disabled={blocked} onClick={() => act({ action: 'project_choose', choice: choice.id })}><strong>{choice.label}</strong><span>{choice.hint}</span><small>使用 {choice.cost} 个调查步数</small></button>)}</div>}
         </>}

@@ -81,6 +81,17 @@ def test_real_brain_path_passes_native_turns_and_system_facts_to_model():
     assert '连续交谈' in messages[0]['content']
 
 
+def test_reply_time_uses_the_captured_instant_across_a_date_boundary():
+    manager = make_state_manager()
+    manager.event_bus.restore_logical_time('2026-11-03 00:00:01')
+    captured = to_epoch('2026-11-02 23:59:59')
+    state_context = manager.build_reply_context(captured)
+    text = build_dialogue_messages('合成人物', [message('user', '明天再聊')], state_context, captured)[0]['content']
+    assert '【当前准确时间】2026-11-02 23:59:59' in text
+    assert '【本轮时间锚点】2026-11-02 23:59:59' in text
+    assert '明天是 2026-11-03' in text
+
+
 def test_preparation_failure_does_not_replace_character_intention_with_service_workflow():
     manager = make_state_manager()
     manager.current_state['客观情境'] = '宿舍里，整理笔记'

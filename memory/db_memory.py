@@ -14,11 +14,6 @@ from memory.postgres import connection, initialize_history
 logger = logging.getLogger(__name__)
 
 
-def separate_thought_and_speech(text):
-    thought, speech = extract_thought_and_speech(text)
-    return thought, speech if thought else (speech or text.strip())
-
-
 class DBMemory:
     MAX_ATTEMPTS = 5
 
@@ -81,7 +76,9 @@ class DBMemory:
             'message_id': event.data['message_id'], 'turn_id': event.data.get('turn_id')})
 
     def _on_llm_finished(self, event: Event):
-        thought, speech = separate_thought_and_speech(event.data['text'])
+        thought, speech = extract_thought_and_speech(event.data['text'])
+        if not speech:
+            return
         timestamp = event.data.get('timestamp', int(self.event_bus.logical_now * 1000))
         self._enqueue('message_list', {'sender': 'assistant', 'text': speech, 'thinking': thought,
             'timestamp': self.event_bus.format_logical_time(timestamp / 1000),
@@ -89,8 +86,7 @@ class DBMemory:
             'completion_status': event.data.get('completion_status', 'completed'), 'turn_id': event.data.get('turn_id')})
 
     def _on_llm_interrupted(self, event: Event):
-        if separate_thought_and_speech(event.data.get('text', ''))[1].strip():
-            self._on_llm_finished(event)
+        self._on_llm_finished(event)
 
     def _on_state_update(self, event: Event):
         self._enqueue('state_list', {'text': json.dumps(event.data['new_state'], ensure_ascii=False),

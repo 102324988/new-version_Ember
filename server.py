@@ -33,6 +33,8 @@ from core.player_api import install_player_api, presentation
 from core.shared_project import INTRO as PROJECT_INTRO
 from core.shared_material import continuation_items
 from core.service_policy import current_source, call_scope
+from persona.persona_api import install_persona_api
+from persona.persona_settings import PersonaSettings, persona_prompts
 
 # Configure logging
 logger = get_logger(__name__)
@@ -81,6 +83,7 @@ class EmberServer:
             raise RuntimeError('常驻服务请使用 python -m service.run 启动')
         self.app = FastAPI()
         self.event_bus = EventBus()
+        self.event_bus.persona_settings = PersonaSettings()
         self.event_bus.proactive_channel = 'web'
         self.manager = ConnectionManager()
         self.event_bus.has_delivery_connection = lambda: bool(self.manager.active_connections)
@@ -100,7 +103,7 @@ class EmberServer:
         # Initialize components
         self.heartbeat = Heartbeat(self.event_bus, interval=settings.HEARTBEAT_INTERVAL)
         self.memory = ShortTermMemory(
-            base_prompt=settings.SYSTEM_PROMPT,
+            base_prompt=persona_prompts(self.event_bus).system,
             max_memory_size=settings.CONTEXT_WINDOW_SIZE,
         )
         if not self.memory.working.existed:
@@ -149,6 +152,7 @@ class EmberServer:
         self._setup_routes()
         self._setup_event_handlers()
         install_player_api(self)
+        install_persona_api(self)
         frontend = os.getenv('EMBER_FRONTEND_DIR', '')
         if frontend:
             self.app.mount('/', StaticFiles(directory=frontend, html=True), name='frontend')
@@ -171,6 +175,8 @@ class EmberServer:
         from service.auth import install_auth
         runtime = self.service_runtime
         install_auth(self.app, runtime.store if runtime else None, runtime.auth if runtime else None)
+        if runtime:
+            runtime.install_quota_route(self.app)
         self.app.add_middleware(
             CORSMiddleware,
             allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"] + (list(runtime.auth.origins) if runtime else []),
@@ -255,11 +261,12 @@ class EmberServer:
                 "timezone": settings.TIMEZONE,
                 "dialogue_policy": {"version": settings.DIALOGUE_POLICY,
                     "rhythm": settings.DIALOGUE_RHYTHM,
-                    "style": settings.DIALOGUE_STYLE, "stock_adaptations": settings.DIALOGUE_ADAPTATIONS},
+                    "style": settings.DIALOGUE_STYLE, "stock_adaptations": persona_prompts(self.event_bus).adaptations},
                 "capabilities": {"message_receipts": True, "correlated_audio": True, "cancel_turn": True,
                     'world_epoch': hasattr(self, 'protocol'), 'player_records': hasattr(self, 'experience'),
                     'archive_tasks': hasattr(self, 'archive_jobs'), 'shared_projects': True, 'shared_materials': True,
-                    'direct_scene': True, 'web_proactive': True, 'web_reminders': settings.PROACTIVE_POLICY == 'events_v1'},
+                    'direct_scene': True, 'web_proactive': True, 'web_reminders': settings.PROACTIVE_POLICY == 'events_v1',
+                    'persona_settings': hasattr(self.event_bus, 'persona_settings')},
                 'shared_project': PROJECT_INTRO,
                 **(self.protocol.snapshot() if hasattr(self, 'protocol') else {}),
                 'experience': experience_snapshot,
@@ -548,7 +555,8 @@ class EmberServer:
                                 self.event_bus.publish(Event(name='user.input', data={
                                     'text': user_input, 'message_id': message_id, 'timestamp': ts, 'turn_id': turn_id,
                                     'retry_reply': bool(retry_receipt), 'turn_timestamp': turn_timestamp,
-                                    'retry_state_prepared': bool(retry_receipt) and failed.get('phase') not in (None, 'preparing')}))
+                                    'retry_state_prepared': bool(retry_receipt) and failed.get('phase') not in (None, 'preparing')
+                                        and failed.get('persona_revision') == persona_prompts(self.event_bus).revision}))
                         if not accepted:
                             await send_json({'type': 'error', 'content': '当前任务尚未完成，请稍后重试', 'client_request_id': request_id})
                             continue

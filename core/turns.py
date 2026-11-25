@@ -19,6 +19,7 @@ class Turn:
         self.timestamp = timestamp
         self.source = source
         self.user_message_id = None
+        self.persona_revision = 0
         self.status = 'running'
         self.released = False
         self.phase = 'preparing'
@@ -46,6 +47,7 @@ class Turn:
         with self._lock:
             return {'turn_id': self.id, 'message_id': self.message_id, 'timestamp': self.timestamp,
                 'user_message_id': self.user_message_id,
+                'persona_revision': self.persona_revision,
                 'source': self.source, 'status': self.status,
                 'released': self.released,
                 'error': self.error,

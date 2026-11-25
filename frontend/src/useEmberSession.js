@@ -245,7 +245,7 @@ export default function useEmberSession(autoPlay) {
         setConfigError('');
         // A local send remains busy until acknowledged, even if an older poll returns idle.
         if (startedAt >= lastSendAt.current) {
-          if (turnAtStart === turnVersion.current && data.capabilities?.cancel_turn && !data.turn && !data.is_thinking && !timers.size) {
+          if (turnAtStart === turnVersion.current && data.capabilities?.cancel_turn && !data.turn && !timers.size) {
             if (stopWaiter.current) {
               stopWaiter.current.reject(new Error('后台轮次已变化，无法确认停止结果；草稿已保留。'));
               stopWaiter.current = null;
@@ -255,7 +255,8 @@ export default function useEmberSession(autoPlay) {
             setActiveTurn(null);
           }
           if (turnAtStart === turnVersion.current && data.turn) applyTurn(data.turn);
-          const thinking = !!data.is_thinking || timers.size > 0 || ['running', 'stopping', 'finalizing'].includes(activeTurnRef.current?.status);
+          const legacyBusy = !data.capabilities?.cancel_turn && !!data.is_thinking;
+          const thinking = legacyBusy || timers.size > 0 || ['running', 'stopping', 'finalizing'].includes(activeTurnRef.current?.status);
           if (turnAtStart === turnVersion.current) {
             busyRef.current = thinking;
             setBusy(thinking);

@@ -7,6 +7,8 @@ from tests.test_service import store
 from tests.test_memory_pipeline import harness, add
 from tests.test_turn_cancellation import make_brain
 from core.event_bus import Event
+from core.service_policy import install
+from memory.retry_policy import next_retry, retry_ready
 from memory.working_memory import WorkingMemory
 from brain.llm_client import LLMClient
 from config.settings import settings
@@ -46,6 +48,22 @@ def test_encoding_retry_survives_restart_and_backoff_increases():
         assert memory.snapshot()['encoding_retry']['next_attempt_at'] == 1180
     memory.encoding_retry(False)
     assert 'encoding_retry' not in memory.snapshot()
+
+
+def test_setting_change_rechecks_budget_wait_without_erasing_model_backoff(store):
+    install(store)
+    store.reserve('chat', call_type='memory_encode')
+    with pytest.raises(BudgetExceeded) as denied:
+        store.reserve('chat', call_type='memory_encode')
+    error = denied.value
+    retry = next_retry(code=error.code, retry_at=error.retry_at, budget_revision=error.budget_revision)
+    legacy_retry = {key: value for key, value in retry.items() if key != 'budget_revision'}
+    timeout = next_retry(code='timeout', retry_at=error.retry_at)
+    assert not retry_ready(retry)
+    store.update_background_quotas({'chat': None, 'memory': None, 'per_minute': None})
+    assert retry_ready(retry) and retry_ready(legacy_retry)
+    assert not retry_ready(timeout)
+    store.reserve('chat', call_type='memory_encode')
 
 
 def test_background_repeated_events_do_not_repeat_failed_model_call():

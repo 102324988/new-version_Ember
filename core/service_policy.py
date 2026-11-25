@@ -26,6 +26,11 @@ def install(store):
     _store = store
 
 
+def current_budget_revision():
+    revision = getattr(_store, 'budget_revision', 0)
+    return revision if type(revision) is int else 0
+
+
 def reserve(kind, model='', call_type='', provider=''):
     origin, task_id = current_source()
     return (_store, _store.reserve(kind, model, call_type, origin=origin, task_id=task_id, provider=provider)) if _store else None

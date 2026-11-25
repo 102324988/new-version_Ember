@@ -11,6 +11,7 @@ const SceneConfirmation = lazy(() => import('./components/SceneConfirmation'));
 const SharedProjectPanel = lazy(() => import('./components/SharedProjectPanel'));
 const ContinuationPanel = lazy(() => import('./components/ContinuationPanel'));
 const ServicePanel = lazy(() => import('./components/ServicePanel'));
+const PersonaSettings = lazy(() => import('./components/PersonaSettings'));
 const MemoryPipelinePanel = lazy(() => import('./components/MemoryPipelinePanel'));
 import { scenePresentation } from './scenePresentation';
 import ChatPanel from './components/ChatPanel';
@@ -233,6 +234,7 @@ export default function App() {
     </div>
   </main>
   {panel === 'settings' && <Modal title="设置" onClose={() => setPanel(null)}>
+    {config?.capabilities?.persona_settings && <Suspense fallback={<p>正在加载人设设置…</p>}><PersonaSettings /></Suspense>}
     {config?.service?.enabled && <Suspense fallback={<p>正在读取连接…</p>}><ServicePanel status={config.service} /></Suspense>}
     {config?.capabilities?.web_proactive && config.experience && <section className="settings-section">
       <h3>主动陪伴</h3>

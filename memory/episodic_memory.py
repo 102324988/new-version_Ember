@@ -228,7 +228,8 @@ class EpisodicMemory:
                 logger.warning('Memory store retained code=%s', code)
                 if task.get('type') == 'store':
                     data = task['data']
-                    data['_retry'] = next_retry(data.get('_retry'), code, retry_at, fingerprint(settings.EMBEDDING_MODEL))
+                    data['_retry'] = next_retry(data.get('_retry'), code, retry_at, fingerprint(settings.EMBEDDING_MODEL),
+                                                getattr(e, 'budget_revision', None))
                     try:
                         self._checkpoint(data)
                     except OSError:

@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 import os
+from threading import Lock
 from zoneinfo import ZoneInfo
 from psycopg2.extras import Json, RealDictCursor
 
@@ -23,14 +24,17 @@ def public_numbers(value):
 
 
 class BudgetExceeded(RuntimeError):
-    def __init__(self, message='后台调用预算已用完，用户对话不受影响', retry_at=None, code='budget_wait'):
+    def __init__(self, message='后台调用预算已用完，用户对话不受影响', retry_at=None, code='budget_wait',
+                 budget_revision=0):
         super().__init__(message)
         self.code = code
         self.retry_at = retry_at
+        self.budget_revision = budget_revision
 
 
 class ServiceStore:
     BACKGROUND_CHAT = ('idle_evolve', 'memory_encode', 'proactive', 'startup_scene', 'graph_consolidation')
+    QUOTA_KEYS = ('chat', 'embedding', 'tts', 'memory', 'per_minute')
 
     def effective_limits(self):
         """Legacy totals are configuration inputs, never foreground caps."""
@@ -42,9 +46,50 @@ class ServiceStore:
         return start, start + timedelta(days=1)
 
     def background_limits(self):
+        return self.quota_status()['limits']
+
+    def _default_quotas(self):
         defaults = {**self.limits, 'chat': self.background_chat_limit()}
-        return {key: max(0, int(os.getenv('EMBER_BACKGROUND_' + key.upper() + '_LIMIT', str(value))))
-                for key, value in defaults.items()}
+        return {
+            **{key: max(0, int(os.getenv(f'EMBER_BACKGROUND_{key.upper()}_LIMIT', str(value))))
+               for key, value in defaults.items()},
+            'memory': max(0, int(os.getenv('EMBER_MEMORY_DAILY_LIMIT', '50'))),
+            'per_minute': max(1, int(os.getenv('EMBER_BACKGROUND_PER_MINUTE', '12'))),
+        }
+
+    def _quota_status(self, cursor):
+        cursor.execute(f'SELECT quotas, revision FROM {self.s}.background_quotas WHERE id=1')
+        record = cursor.fetchone()
+        revision = record['revision'] if record else 0
+        quotas = self._default_quotas()
+        if record:
+            quotas.update(record['quotas'])
+        return {'background_quotas': quotas, 'quota_revision': revision,
+                'limits': {key: quotas[key] for key in self.limits}, 'background_chat_limit': quotas['chat']}
+
+    def quota_status(self):
+        with self.cursor() as c:
+            return self._quota_status(c)
+
+    def update_background_quotas(self, changes):
+        if not changes or changes.keys() - set(self.QUOTA_KEYS):
+            raise ValueError('请选择有效的后台限额项目')
+        if any(value is not None and (type(value) is not int or not 0 <= value <= 2147483647)
+               for value in changes.values()):
+            raise ValueError('限额必须是 0 至 2147483647 的整数，或设为不限额')
+        with self.cursor() as c:
+            c.execute('SELECT pg_advisory_xact_lock(hashtext(%s))', (self.s + '.usage',))
+            c.execute(f'''INSERT INTO {self.s}.background_quotas AS saved (id,quotas,revision)
+                VALUES(1,%s,1) ON CONFLICT(id) DO UPDATE
+                SET quotas=saved.quotas || EXCLUDED.quotas, revision=saved.revision+1
+                WHERE saved.quotas IS DISTINCT FROM saved.quotas || EXCLUDED.quotas''', (Json(changes),))
+            current = self._quota_status(c)
+        self._observe_quota_revision(current['quota_revision'])
+        return current
+
+    def _observe_quota_revision(self, revision):
+        with self._quota_lock:
+            self.budget_revision = max(self.budget_revision, revision)
 
     def background_chat_limit(self):
         base = self.limits.get('chat', 0)
@@ -57,6 +102,8 @@ class ServiceStore:
             from memory.postgres import connection
         self.connection, self.s = connection, schema
         self.limits = limits or {'chat': 200, 'embedding': 200, 'tts': 200}
+        self._quota_lock = Lock()
+        self.budget_revision = 0
 
     @contextmanager
     def cursor(self):
@@ -95,7 +142,10 @@ class ServiceStore:
                     probe_until timestamptz, PRIMARY KEY(kind,model,provider));
                 CREATE TABLE IF NOT EXISTS {self.s}.usage_blocks (
                     id text PRIMARY KEY, kind text NOT NULL, call_type text NOT NULL,
-                    task_id text NOT NULL, reason text NOT NULL, created_at timestamptz DEFAULT now());''')
+                    task_id text NOT NULL, reason text NOT NULL, created_at timestamptz DEFAULT now());
+                CREATE TABLE IF NOT EXISTS {self.s}.background_quotas (
+                    id int PRIMARY KEY CHECK(id=1), quotas jsonb NOT NULL, revision bigint NOT NULL);''')
+        self._observe_quota_revision(self.quota_status()['quota_revision'])
 
     def check_ready(self):
         """Probe a fresh transaction; initialization flags can outlive a DB outage."""
@@ -188,27 +238,31 @@ class ServiceStore:
             raise ValueError('Invalid call origin')
         start, end = self.day_window()
         blocked, retry_at, code = None, end.timestamp(), 'budget_wait'
+        revision = 0
         with self.cursor() as c:
             # Reservations count even if the network fails: billing may be uncertain.
             if origin == 'background':
                 c.execute('SELECT pg_advisory_xact_lock(hashtext(%s))', (self.s + '.usage',))
-                # Old chat provenance is recoverable by its known background
-                # types. Old embeddings/TTS stay conservatively background.
-                predicate = "(origin='background' OR (origin='legacy' AND (kind<>'chat' OR call_type=ANY(%s))))"
-                c.execute(f'''SELECT count(*) AS n FROM {self.s}.usage WHERE kind=%s
-                    AND status<>'not_sent' AND created_at>=%s AND created_at<%s AND {predicate}''',
-                    (kind, start, end, list(self.BACKGROUND_CHAT)))
-                if c.fetchone()['n'] >= self.background_limits()[kind]:
-                    blocked = '后台调用预算已用完，用户对话不受影响'
-                if kind == 'chat' and call_type == 'memory_encode' and not blocked:
+                status = self._quota_status(c)
+                quotas, revision = status['background_quotas'], status['quota_revision']
+                if quotas[kind] is not None:
+                    # Old chat provenance is recoverable by its known background
+                    # types. Old embeddings/TTS stay conservatively background.
+                    predicate = "(origin='background' OR (origin='legacy' AND (kind<>'chat' OR call_type=ANY(%s))))"
+                    c.execute(f'''SELECT count(*) AS n FROM {self.s}.usage WHERE kind=%s
+                        AND status<>'not_sent' AND created_at>=%s AND created_at<%s AND {predicate}''',
+                        (kind, start, end, list(self.BACKGROUND_CHAT)))
+                    if c.fetchone()['n'] >= quotas[kind]:
+                        blocked = '后台调用预算已用完，用户对话不受影响'
+                if kind == 'chat' and call_type == 'memory_encode' and not blocked and quotas['memory'] is not None:
                     c.execute(f'''SELECT count(*) AS n FROM {self.s}.usage WHERE kind='chat'
                         AND status<>'not_sent' AND call_type='memory_encode' AND origin<>'foreground' AND created_at>=%s AND created_at<%s''', (start, end))
-                    if c.fetchone()['n'] >= max(0, int(os.getenv('EMBER_MEMORY_DAILY_LIMIT', '50'))):
+                    if c.fetchone()['n'] >= quotas['memory']:
                         blocked = '记忆整理今日预算已用完，原始资料保留等待次日'
-                if not blocked:
+                if not blocked and quotas['per_minute'] is not None:
                     c.execute(f'''SELECT count(*) AS n FROM {self.s}.usage WHERE kind=%s
                         AND status<>'not_sent' AND origin='background' AND created_at>now()-interval '1 minute' ''', (kind,))
-                    if c.fetchone()['n'] >= max(1, int(os.getenv('EMBER_BACKGROUND_PER_MINUTE', '12'))):
+                    if c.fetchone()['n'] >= quotas['per_minute']:
                         blocked, retry_at = '后台请求过于频繁，稍后继续', datetime.now(timezone.utc).timestamp() + 60
                 if not blocked:
                     c.execute(f'SELECT * FROM {self.s}.circuits WHERE kind=%s AND model=%s AND provider=%s FOR UPDATE', (kind, model, provider))
@@ -228,7 +282,7 @@ class ServiceStore:
                 c.execute(f'''INSERT INTO {self.s}.usage(id,kind,model,call_type,origin,task_id,provider)
                     VALUES(%s,%s,%s,%s,%s,%s,%s)''', (key, kind, model, call_type, origin, task_id, provider))
         if blocked:
-            raise BudgetExceeded(blocked, retry_at, code)
+            raise BudgetExceeded(blocked, retry_at, code, revision)
         return key
 
     def finish_usage(self, key, status='completed', usage=None, error_code=''):
@@ -279,7 +333,8 @@ class ServiceStore:
             c.execute(f'''SELECT id,kind,status,updated_at,result FROM {self.s}.jobs
                 ORDER BY updated_at DESC LIMIT 5''')
             jobs = [dict(x) for x in c.fetchall()]
-        return public_numbers({'enabled': True, 'foreground_unlimited': True, 'limits': self.background_limits(),
-            'background_chat_limit': self.background_limits()['chat'], 'background_usage': background_usage,
+            quotas = self._quota_status(c)
+        self._observe_quota_revision(quotas['quota_revision'])
+        return public_numbers({'enabled': True, 'foreground_unlimited': True, **quotas, 'background_usage': background_usage,
             'reset_at': end.isoformat(), 'breakdown': breakdown, 'usage': usage, 'jobs': jobs,
             'measured_at': datetime.now(timezone.utc).isoformat()})

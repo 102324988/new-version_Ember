@@ -539,7 +539,8 @@ def test_memory_control_is_epoch_bound_and_rejects_unknown_actions():
         server.db_memory.stop()
 
 
-def test_websocket_reply_retry_keeps_user_id_and_cannot_reexecute_while_running():
+@pytest.mark.parametrize('persona_changed', [False, True])
+def test_websocket_reply_retry_keeps_user_id_and_cannot_reexecute_while_running(persona_changed):
     server = make_server()
     key, stamp = str(uuid.uuid4()), 1793618400000
     accepted = []
@@ -549,6 +550,10 @@ def test_websocket_reply_retry_keeps_user_id_and_cannot_reexecute_while_running(
     failed = server.event_bus.turns.begin(stamp, key)
     failed.user_message_id = key
     failed.set_phase('generating'); failed.finish('failed'); failed.release()
+    if persona_changed:
+        from persona.persona_settings import PersonaSettings
+        server.event_bus.persona_settings = PersonaSettings()
+        server.event_bus.persona_settings.apply('合成新人设', '')
     def receive(event):
         accepted.append(event.data)
         running = server.event_bus.turns.begin(event.data['turn_timestamp'], event.data['turn_id'])
@@ -568,7 +573,8 @@ def test_websocket_reply_retry_keeps_user_id_and_cannot_reexecute_while_running(
             ws.send_json(payload)
             receipt = echo()
             assert receipt['turn_id'] != key
-            assert accepted[0]['retry_reply'] and accepted[0]['retry_state_prepared']
+            assert accepted[0]['retry_reply']
+            assert accepted[0]['retry_state_prepared'] is not persona_changed
             ws.send_json(payload)
             assert echo()['replayed']
             assert len(accepted) == 1

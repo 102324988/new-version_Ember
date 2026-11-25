@@ -1,13 +1,16 @@
 """Objective continuity checks; perceived warmth still needs human evaluation."""
 import math
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import pytest
 
-from brain.dialogue_context import build_dialogue_messages
+from brain.dialogue_context import build_compact_reply_messages, build_dialogue_messages
+from config.settings import settings
 from core.time_utils import to_epoch
 from tests.test_persistence_scene import make_state_manager
 from tests.test_turn_cancellation import make_brain
+from tools.processor import ToolCallProcessor
 
 
 def message(role, text, when=None, **metadata):
@@ -79,6 +82,84 @@ def test_real_brain_path_passes_native_turns_and_system_facts_to_model():
     assert messages[-1] == {'role': 'user', 'content': '哪一段？'}
     assert messages[-2] == {'role': 'assistant', 'content': '我这页还差一段。'}
     assert '连续交谈' in messages[0]['content']
+
+
+@pytest.mark.parametrize('text', ['行，那就这样吧。', '好哇。', '噢，懂啦。', '谢谢，够啦。', '我忙完回来啦。'])
+def test_compact_reply_keeps_real_roles_and_confirmed_scene(text):
+    history = [message('user', '很早以前的一条'), message('assistant', '旧答复'),
+               message('user', '可以先围绕原句说。'), message('assistant', '好，保留原词。'), message('user', text)]
+    state = {'scene': {'character_location': '合成地点', 'remote_contact_confirmed': True,
+                      'communication_mode': 'remote'}, 'P': 6, 'A': 4, 'D': 7}
+    messages = build_compact_reply_messages('合成依鸣', history, state, to_epoch('2026-11-24 15:20:00'))
+    assert messages[1:] == [{'role': row['role'], 'content': row['content']} for row in history[-3:]]
+    prompt = messages[0]['content']
+    assert '合成依鸣' in prompt and '不能承诺改文件' in prompt
+    assert '角色在合成地点，当前是远程交流，用户位置未知' in prompt
+    assert 'P=6，A=4，D=7' in prompt and '2026-11-24 15:20:00' in prompt
+    assert '很早以前的一条' not in str(messages)
+
+
+@pytest.mark.parametrize('last,metadata', [
+    ('好哇。之前你说的那个呢？', {}),
+    ('好哇，但我还想问上下两行的关系。', {}),
+    ('好哇。', {'completion_status': 'interrupted'}),
+    ('好哇。', {'turn_source': 'proactive'}),
+])
+def test_compact_reply_requires_a_complete_unambiguous_exchange(last, metadata):
+    history = [message('user', '先留一点空间'), message('assistant', '你看着留吧。', **metadata), message('user', last)]
+    assert build_compact_reply_messages('合成依鸣', history, {'scene': {}}, to_epoch('2026-11-24 15:20:00')) is None
+
+
+@pytest.mark.parametrize('rhythm,text,compact', [
+    ('compact_v1', '好哇。', True),
+    ('baseline', '好哇。', False),
+    ('compact_v1', '好哇。你再解释一下排序原理。', False),
+])
+def test_compact_mode_on_real_reply_path(monkeypatch, rhythm, text, compact):
+    monkeypatch.setattr(settings, 'DIALOGUE_POLICY', 'expressive_v1')
+    monkeypatch.setattr(settings, 'DIALOGUE_RHYTHM', rhythm)
+    brain, bus, memory, _ = make_brain()
+    manager = make_state_manager()
+    manager.event_bus, manager.short_term_memory, manager.prepare_dialogue = bus, memory, Mock()
+    brain.state_manager = manager
+    memory.add_message('user', '保留在完整历史的合成文字。')
+    memory.add_message('assistant', '旧答复。')
+    memory.add_message('user', '最后那个空行要删吗？')
+    memory.add_message('assistant', '先留着吧。')
+    brain.llm_client.stream_chat.return_value = iter(['收到这句了。'])
+    brain.process_dialogue(text)
+    request = brain.llm_client.stream_chat.call_args.kwargs['messages']
+    assert request[-1] == {'role': 'user', 'content': text}
+    assert ('不能承诺改文件' in request[0]['content']) is compact
+    assert ('保留在完整历史的合成文字。' in str(request)) is not compact
+    brain.llm_client.stream_chat.assert_called_once()
+    assert [row['content'] for row in memory.get_full_messages()[-2:]] == [text, '收到这句了。']
+
+
+def test_unexpected_tool_call_restores_full_context_after_compact_reply_prompt(monkeypatch):
+    monkeypatch.setattr(settings, 'DIALOGUE_POLICY', 'expressive_v1')
+    monkeypatch.setattr(settings, 'DIALOGUE_RHYTHM', 'compact_v1')
+    brain, bus, memory, _ = make_brain()
+    manager = make_state_manager()
+    manager.event_bus, manager.short_term_memory, manager.prepare_dialogue = bus, memory, Mock()
+    brain.state_manager = manager
+    brain.tool_processor = ToolCallProcessor.create_with_memory_tool(SimpleNamespace(
+        query_memory=lambda **_: {'found': False}
+    ))
+    memory.add_message('user', '合成的较早资料。')
+    memory.add_message('assistant', '好。')
+    memory.add_message('user', '空行留不留？')
+    memory.add_message('assistant', '留着吧。')
+    brain.llm_client.stream_chat.side_effect = [
+        iter(['<tool>{"name":"memory_query","parameters":{"query":"合成"}} </tool>']),
+        iter(['好。']),
+    ]
+    brain.process_dialogue('好哇。')
+    first, followup = [call.kwargs['messages'] for call in brain.llm_client.stream_chat.call_args_list]
+    assert '合成的较早资料。' not in str(first)
+    assert '合成的较早资料。' in str(followup)
+    assert '不能承诺改文件' not in followup[0]['content']
+    assert memory.get_full_messages()[-1]['content'] == '好。'
 
 
 def test_reply_time_uses_the_captured_instant_across_a_date_boundary():

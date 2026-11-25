@@ -669,6 +669,7 @@ class ArchiveManager:
         if self.event_bus:
             with self.event_bus.pending_condition:
                 self.event_bus.paused = True
+                self.event_bus.world_revision += 1
         if self.heartbeat:
             self.heartbeat.pause()
         try:
@@ -676,6 +677,8 @@ class ArchiveManager:
                 with self.event_bus.pending_condition:
                     if not self.event_bus.pending_condition.wait_for(lambda: self.event_bus.pending_dialogues == 0, timeout=120):
                         raise ArchiveError('已接收的对话尚未完成，存读档已中止')
+                if self.state_manager and hasattr(self.state_manager, 'wait_idle') and not self.state_manager.wait_idle(90):
+                    raise ArchiveError('角色推演尚未结束，存读档已中止')
                 # Encoding performs network IO outside the operation lock.
                 # Drain it before taking that lock, otherwise its checkpoint
                 # would deadlock against the archive waiting for completion.

@@ -1,4 +1,5 @@
 """A recoverable backup worker and cached service status, one world writer."""
+import asyncio
 import logging
 import os
 import threading
@@ -18,7 +19,29 @@ class ServiceRuntime:
         self.thread = None
         self.interval = max(60, int(os.getenv('EMBER_BACKUP_INTERVAL', '86400')))
         self.cached = store.snapshot()
+        self._quota_updates = {}
+        self._quota_lock = threading.Lock()
         self.error = None
+
+    def install_quota_route(self, app):
+        from fastapi import HTTPException
+
+        @app.patch('/service/background-quotas')
+        async def update_background_quotas(changes: dict):
+            try:
+                return await asyncio.to_thread(self.update_background_quotas, changes)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+            except Exception as exc:
+                logger.exception('后台限额保存失败')
+                raise HTTPException(503, '暂时无法保存后台限额，请重试') from exc
+
+    def update_background_quotas(self, changes):
+        status = self.store.update_background_quotas(changes)
+        with self._quota_lock:
+            if status['quota_revision'] >= self._quota_updates.get('quota_revision', 0):
+                self._quota_updates = status
+        return status
 
     def schedule(self):
         slot = int(time.time() // self.interval)
@@ -106,7 +129,10 @@ class ServiceRuntime:
             self.stop_event.wait(5)
 
     def snapshot(self):
-        return {**self.cached, 'error': self.error}
+        cached, updated = self.cached, self._quota_updates
+        if updated.get('quota_revision', -1) > cached['quota_revision']:
+            cached = {**cached, **updated}
+        return {**cached, 'error': self.error}
 
 
 class WorldLock:

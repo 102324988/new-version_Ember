@@ -1,7 +1,7 @@
 """Versioned expression preferences; never rewrites a user's persona file."""
 
 VERSIONS = ('legacy', 'expressive_v1')
-RHYTHMS = ('baseline', 'turn_v1')
+RHYTHMS = ('baseline', 'turn_v1', 'compact_v1')
 STYLE_DEFAULTS = {'symbols': 'occasional', 'actions': 'natural', 'length': 'adaptive'}
 STYLE_CHOICES = {'symbols': ('occasional', 'none'), 'actions': ('natural', 'none'),
                  'length': ('adaptive', 'brief', 'expansive')}
@@ -54,7 +54,7 @@ def adapt_idle_prompt(text, version):
 
 def validate_rhythm(rhythm):
     if rhythm not in RHYTHMS:
-        raise ValueError('EMBER_DIALOGUE_RHYTHM 必须是 baseline 或 turn_v1')
+        raise ValueError('EMBER_DIALOGUE_RHYTHM 必须是 ' + '、'.join(RHYTHMS))
     return rhythm
 
 

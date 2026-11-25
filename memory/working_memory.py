@@ -108,11 +108,12 @@ class WorkingMemory:
         self.data['requested'] = True
 
     @atomic
-    def encoding_retry(self, failed, code='unavailable', retry_at=None, config=''):
+    def encoding_retry(self, failed, code='unavailable', retry_at=None, config='', budget_revision=None):
         if not failed:
             self.data.pop('encoding_retry', None)
             return
-        self.data['encoding_retry'] = next_retry(self.data.get('encoding_retry'), code, retry_at, config)
+        self.data['encoding_retry'] = next_retry(self.data.get('encoding_retry'), code, retry_at, config,
+                                                 budget_revision)
 
     @atomic
     def begin_encoding(self, text, contexts):

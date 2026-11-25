@@ -609,6 +609,41 @@
   margin-top: 20px;
   padding-top: 4px
 }
+.persona-fields {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.persona-fields label { display: grid; gap: 6px; margin-block: 10px; font-size: 14px; }
+.persona-fields textarea, .persona-fields select {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+}
+.persona-fields textarea { resize: vertical; }
+.persona-fields details { margin-block: 12px; }
+.persona-preview pre {
+  white-space: pre-wrap;
+  overflow: auto;
+  max-height: 260px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.persona-replies {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+.persona-replies div { padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
+.persona-replies p { white-space: pre-wrap; margin-bottom: 0; }
 .setting-row {
   display: flex;
   justify-content: space-between;
@@ -626,6 +661,12 @@
   width: 100%;
   accent-color: var(--accent)
 }
+.quota-settings fieldset { border: 0; padding: 0; margin: 14px 0; min-width: 0; }
+.quota-settings legend { font-weight: 600; }
+.quota-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(66px, 100px) max-content; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 14px; }
+.quota-row input[type=number] { width: 100%; min-height: 44px; padding: 8px; border: 1px solid var(--line-strong); border-radius: 8px; color: var(--ink); background: var(--paper); font: inherit; }
+.quota-unlimited { display: flex; align-items: center; gap: 4px; min-height: 44px; }
+.quota-unlimited input { width: 18px; height: 18px; accent-color: var(--accent); }
 .muted {
   color: var(--muted)
 }

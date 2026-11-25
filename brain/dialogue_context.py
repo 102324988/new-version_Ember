@@ -5,6 +5,43 @@ import re
 from datetime import datetime, timedelta
 from brain.tag_utils import extract_thought_and_speech
 from core.time_utils import get_timezone, time_period
+from persona.scene import normalize_scene
+
+
+_COMPACT_INPUT = re.compile(
+    r'(?:行[，,]那就这样吧|好哇|好嘞|好呀|嗯嗯|[噢哦][，,]懂啦|'
+    r'谢谢[，,]够啦|我忙完回来啦|我?回来啦)[。！!～]?'
+)
+_COMPACT_RULE = (
+    '\n只写依鸣这一次会真正发出的公开对白。对话已经说清时，一声确认或道别就够。'
+    '简短的确认只表示接话，没有新增现实委托。不能承诺改文件、代发、在场或完成没有回执的动作。'
+    '不补自己此前的经历、窗外见闻和活动进度。沿用已经明确的称呼、事实或约定。'
+    '\n语气示例：对方说「就这么说吧」时，可以回「行。」；对方说「我去关灯啦」时，可以回「好，回头见。」'
+    '对方说「哎原来是这么回事」时，可以回「对，就是那个意思。」'
+)
+
+
+def build_compact_reply_messages(core_persona, history, state, now):
+    """Offer a smaller prompt only for complete, recognizable conversational replies."""
+    recent = history[-3:]
+    if [row.get('role') for row in recent] != ['user', 'assistant', 'user']:
+        return None
+    if any(not isinstance(row.get('content'), str) or not row['content'].strip()
+           or row.get('completion_status', 'completed') != 'completed' for row in recent):
+        return None
+    if recent[1].get('turn_source') == 'proactive' or not _COMPACT_INPUT.fullmatch(recent[-1]['content'].strip()):
+        return None
+    if not isinstance(state.get('scene'), dict) or not extract_thought_and_speech(recent[1]['content'])[1]:
+        return None
+
+    scene = normalize_scene(state)
+    mode = {'face_to_face': '面对面交流', 'remote': '远程交流', 'unknown': '交流方式未知'}[scene['communication_mode']]
+    character = f'角色在{scene["character_location"]}' if scene['character_location'] else '角色位置未知'
+    user = f'用户在{scene["user_location"]}' if scene['user_location'] else '用户位置未知'
+    context = f'【已知情境】{character}，当前是{mode}，{user}。'
+    context += '\n【当前 PAD】' + '，'.join(f'{axis}={state.get(axis, 5)}' for axis in ('P', 'A', 'D')) + '。'
+    return build_dialogue_messages(core_persona + _COMPACT_RULE, recent, context, now,
+                                   policy_version='expressive_v1')
 
 
 def message_time(value):

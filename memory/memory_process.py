@@ -20,6 +20,7 @@ from core.service_policy import call_scope
 from core.model_errors import ModelCallError, classify
 from memory.retry_policy import retry_ready, fingerprint
 from memory.batching import make_batch, estimated_tokens, FORMAT_REVISION, SOURCE_RULES
+from persona.persona_settings import persona_prompts
 
 logger = logging.getLogger(__name__)
 
@@ -179,7 +180,7 @@ class Hippocampus:
                         self.working.request()
                         if code in ('context_limit', 'output_limit') or (code == 'timeout' and self.working.snapshot().get('encoding_retry', {}).get('attempts', 0) >= 1):
                             self.working.shrink_encoding()
-                        self.working.encoding_retry(True, code, retry_at, config)
+                        self.working.encoding_retry(True, code, retry_at, config, getattr(exc, 'budget_revision', None))
                     except OSError:
                         logger.warning('Memory checkpoint unavailable; original log retained')
                     logger.warning('Memory encoding retained code=%s', code)
@@ -342,7 +343,8 @@ class Hippocampus:
         store_stage = 'committing' if all(k in vector_cache for k in ('embedding', 'insight_embedding')) else 'vectorizing'
         retry = data.get('encoding_retry') or next((r for j in data['jobs'] for r in j.get('retries', {}).values()), {})
         phase = ('paused' if data.get('manual_paused') else 'needs_attention' if retry.get('needs_attention')
-            else 'budget_wait' if retry.get('code') == 'budget_wait' else 'backoff' if retry and not retry_ready(retry)
+            else 'budget_wait' if retry.get('code') == 'budget_wait' and not retry_ready(retry)
+            else 'backoff' if retry and not retry_ready(retry)
             else self._stage if self._stage != 'waiting' else store_stage if data['jobs']
             else 'waiting' if data.get('encoding') or data['requested'] or journal_bytes else data.get('last_result', 'waiting'))
         return {**self.working.status(), 'last_error': self.last_error, 'phase': phase,
@@ -475,7 +477,7 @@ class Hippocampus:
         旧接口 - 通过 LLM 判断是否需要检索记忆
         保留兼容性，内部调用 query_memory
         """
-        system_prompt = settings.CORE_PERSONA + "\n" + settings.MEMORY_JUDGE_PROMPT
+        system_prompt = persona_prompts(self.event_bus).core + "\n" + settings.MEMORY_JUDGE_PROMPT
         logger.info(f"Loading Memory\n")
         user_prompt = f"提供的日志如下：\n\n{content}"
         messages = [

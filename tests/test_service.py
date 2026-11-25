@@ -191,6 +191,60 @@ def test_usage_cap_is_atomic_and_not_rewound_by_game_time(store):
     assert row['requests'] == 1 and row['input_tokens'] == 123 and row['output_tokens'] == 4
 
 
+def test_owner_can_edit_background_quotas_and_unlock_existing_usage(store, auth):
+    app = app_for(store, auth)
+    runtime = ServiceRuntime(store, auth)
+    runtime.install_quota_route(app)
+    client = TestClient(app)
+    route = '/service/background-quotas'
+    assert client.patch(route, json={'chat': None}).status_code == 401
+    headers = login(client)
+    assert client.patch(route, json={'chat': None}).status_code == 403
+    for invalid in ({}, {'chat': True}, {'memory': -1}, {'tts': '0'}, {'per_minute': 2147483648}, {'foreground': 1}):
+        assert client.patch(route, headers=headers, json=invalid).status_code == 422
+
+    store.reserve('chat', call_type='memory_encode')
+    with pytest.raises(BudgetExceeded):
+        store.reserve('chat', call_type='memory_encode')
+    unlocked = dict.fromkeys(store.QUOTA_KEYS)
+    result = client.patch(route, headers=headers, json=unlocked)
+    assert result.status_code == 200
+    assert result.json()['background_quotas'] == unlocked
+    assert runtime.snapshot()['background_quotas'] == unlocked
+    store.reserve('chat', call_type='memory_encode')
+    store.reserve('tts')
+    assert store.snapshot()['usage']['chat']['requests'] == 2
+
+    result = client.patch(route, headers=headers, json={'chat': 0})
+    assert result.json()['background_quotas'] == {**unlocked, 'chat': 0}
+    restarted = ServiceStore(schema=store.s)
+    restarted.initialize()
+    assert restarted.quota_status()['background_quotas'] == {**unlocked, 'chat': 0}
+    with pytest.raises(BudgetExceeded):
+        restarted.reserve('chat', call_type='memory_encode')
+    restarted.reserve('chat', call_type='dialogue', origin='foreground')
+
+
+def test_partial_quota_saves_and_independent_limits(store):
+    with ThreadPoolExecutor(2) as pool:
+        list(pool.map(store.update_background_quotas, ({'chat': None, 'memory': 0}, {'tts': None, 'per_minute': 0})))
+    assert store.quota_status()['background_quotas'] == {
+        'chat': None, 'embedding': 1, 'tts': None, 'memory': 0, 'per_minute': 0,
+    }
+    with pytest.raises(BudgetExceeded, match='频繁'):
+        store.reserve('tts')
+    store.update_background_quotas({'per_minute': None})
+    with pytest.raises(BudgetExceeded, match='记忆整理'):
+        store.reserve('chat', call_type='memory_encode')
+    store.reserve('chat', call_type='idle_evolve')
+    for _ in range(3):
+        ticket = store.reserve('tts', model='fixture')
+        store.finish_usage(ticket, status='failed')
+    with pytest.raises(BudgetExceeded) as blocked:
+        store.reserve('tts', model='fixture')
+    assert blocked.value.code == 'circuit_wait'
+
+
 def test_model_and_tts_limits_apply_before_external_calls(store):
     from brain.llm_client import LLMClient
     from brain.tts import TTSManager, TTSGenerationError

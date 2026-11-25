@@ -6,6 +6,7 @@ import random
 import threading
 import time
 import math
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from brain.llm_client import LLMClient
@@ -23,6 +24,7 @@ from persona import continuity
 from core.companionship import offers as companionship_offers
 from core.proactive_events import EventProactivePolicy
 from memory.journal import append_event_once
+from persona.persona_settings import persona_prompts
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +48,10 @@ last_known_presence 只是长间隔前的最后所知，不是当前事实，不
 """
 
 
+class IdleInferenceSuperseded(Exception):
+    """The world changed while the idle model was answering."""
+
+
 class StateManager:
     _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="state_mgr")
 
@@ -62,6 +68,8 @@ class StateManager:
             continuity.load_continuity(self.current_state)
         self._thinking_lock = threading.Lock()
         self._thinking = False
+        self._idle_finished = threading.Event()
+        self._idle_finished.set()
         self.is_sleeping = (self.current_state.get('role_continuity') or {}).get('sleeping') is True
         self.dialogue_count = 0
         self.ready = False
@@ -75,7 +83,7 @@ class StateManager:
     @property
     def is_thinking(self):
         with self._thinking_lock:
-            return self._thinking
+            return self._thinking or not self._idle_finished.is_set()
 
     @is_thinking.setter
     def is_thinking(self, value):
@@ -109,7 +117,7 @@ class StateManager:
                 for row in data.get('events', [])[-8:]]
         return state
 
-    def _ask_llm_with_tools(self, system_prompt, user_prompt, call_type="state_update", max_iterations=1):
+    def _ask_llm_with_tools(self, system_prompt, user_prompt, call_type="state_update", max_iterations=1, request_window=nullcontext):
         if settings.DIALOGUE_POLICY == 'expressive_v1':
             user_prompt += VIEW_RULES
         if settings.ROLE_CONTINUITY_ENABLED:
@@ -118,7 +126,8 @@ class StateManager:
             {"role": "system", "content": self.tool_processor.build_system_prompt_with_tools(system_prompt + SCENE_RULES)},
             {"role": "user", "content": user_prompt},
         ]
-        response = self.llm_client.one_chat(settings.SMALL_LLM, messages, timeout=30, call_type=call_type)
+        with request_window():
+            response = self.llm_client.one_chat(settings.SMALL_LLM, messages, timeout=30, call_type=call_type)
         if not response:
             return ""
         result = self.tool_processor.process_llm_output(
@@ -128,7 +137,8 @@ class StateManager:
                 {"role": "assistant", "content": response},
                 {"role": "user", "content": result["results_text"] + "\n请消费这些结果输出完整状态 JSON。禁止再次调用工具。"},
             ])
-            response = self.llm_client.one_chat(settings.SMALL_LLM, messages, timeout=30, call_type=call_type)
+            with request_window():
+                response = self.llm_client.one_chat(settings.SMALL_LLM, messages, timeout=30, call_type=call_type)
         return self.tool_processor.remove_tool_calls(response or "")
 
     def _async_log(self, filename, content):
@@ -196,9 +206,10 @@ class StateManager:
         self._update_state(state, now)
         self.ready = True
 
-    def _generate_state(self, prompt, now, user_text='', allow_inferred=False, call_type='state_update', offline=False, update_pad=True):
+    def _generate_state(self, prompt, now, user_text='', allow_inferred=False, call_type='state_update', offline=False, update_pad=True, request_window=nullcontext):
+        core_persona = persona_prompts(self.event_bus).core
         for attempt in range(2):
-            response = self._ask_llm_with_tools(settings.CORE_PERSONA, prompt, call_type=call_type)
+            response = self._ask_llm_with_tools(core_persona, prompt, call_type=call_type, request_window=request_window)
             try:
                 candidate = self.llm_client._extract_json(response)
                 if not isinstance(candidate, dict):
@@ -389,18 +400,19 @@ class StateManager:
         self.prepare_dialogue(event.data.get('text', ''))
 
     def _on_tick(self, event):
-        if self.event_bus.paused or self.event_bus.world_paused or self.event_bus.pending_dialogues or getattr(self.event_bus, 'archive_active', False) or not self.ready:
-            return
         if not self.event_bus.operation_lock.acquire(blocking=False):
             return
         try:
+            if (not self.ready or not self._idle_finished.is_set() or self.event_bus.paused or self.event_bus.world_paused
+                    or self.event_bus.pending_dialogues or getattr(self.event_bus, 'archive_active', False)):
+                return
             now = self._get_logical_now()
             self._advance_role(now)
             self._dispatch_due_offer()
             elapsed = time.monotonic() - self.last_interaction_real_time
             if elapsed > self._get_floating_timeout(self.state_update_timeout):
                 self.state_update_timeout = min(self.state_update_timeout * 1.5, settings.STATE_IDLE_MAX_TIMEOUT)
-                self._update_state_due_to_idle(self._get_logical_now())
+                self._update_state_due_to_idle(self._get_logical_now(), request_window=self._idle_request_window)
         finally:
             self.event_bus.operation_lock.release()
 
@@ -441,8 +453,35 @@ class StateManager:
         if offer['kind'] != 'ordinary' and policy.check(history, offer, **self.delivery_gates())['allowed']:
             self.event_bus.publish(Event('idle_speak', {'offer_id': offer['id']}))
 
-    def _update_state_due_to_idle(self, now):
-        self.is_thinking = True
+    def wait_idle(self, timeout):
+        return self._idle_finished.wait(timeout)
+
+    @contextmanager
+    def _idle_request_window(self):
+        # The heartbeat holds operation_lock exactly once here. Only the provider
+        # call runs unlocked. Tools, validation, persistence and events stay serialized.
+        bus = self.event_bus
+        def revision():
+            experience = getattr(bus, 'experience', None)
+            return (bus.world_revision, bus.turns.current, getattr(experience, 'data', {}).get('revision'),
+                    bus.quiet, self._format_logical_time(bus.logical_now, '%Y-%m-%d'), time_period(bus.logical_now))
+        state, version = self.current_state, revision()
+        def obsolete():
+            return (bus.paused or bus.world_paused or bus.pending_dialogues or getattr(bus, 'archive_active', False)
+                    or state is not self.current_state or version != revision())
+        if obsolete():
+            raise IdleInferenceSuperseded()
+        bus.operation_lock.release()
+        try:
+            yield
+        finally:
+            bus.operation_lock.acquire()
+            if obsolete():
+                raise IdleInferenceSuperseded()
+
+    def _update_state_due_to_idle(self, now, request_window=nullcontext):
+        self._idle_finished.clear()
+        superseded = False
         try:
             self._expire_user_presence(now)
             info = self._get_idle_info(now)
@@ -465,7 +504,7 @@ class StateManager:
                 f"\n主动投递条件：{json.dumps(delivery, ensure_ascii=False)}；不允许时 should_speak 必须为 false，仍可平缓更新自己的活动。"
                 + delivery_rules(self.event_bus)
             )
-            pulse = self._generate_state(prompt, now, allow_inferred=True, call_type='idle_evolve')
+            pulse = self._generate_state(prompt, now, allow_inferred=True, call_type='idle_evolve', request_window=request_window)
             if pulse.get('memory_encode') is True:
                 self.event_bus.publish(Event('memory.preprocess', {'reason': 'idle'}))
             sleeping = pulse.get('is_sleeping', self.is_sleeping) is True
@@ -480,13 +519,16 @@ class StateManager:
                 scene['communication_mode'] == 'remote' and scene['remote_contact_confirmed'])
             if pulse.get('should_speak') is True and can_speak and not sleeping and not self.event_bus.quiet and delivery['allowed']:
                 self.event_bus.publish(Event('idle_speak', {}))
+        except IdleInferenceSuperseded:
+            superseded = True
         except Exception as exc:
             logger.exception("闲置演化失败")
             self.last_error = str(exc)
         finally:
-            self.last_interaction_logical_time = self._get_logical_now()
-            self.last_interaction_real_time = time.monotonic()
-            self.is_thinking = False
+            if not superseded:
+                self.last_interaction_logical_time = self._get_logical_now()
+                self.last_interaction_real_time = time.monotonic()
+            self._idle_finished.set()
 
     def after_restore(self):
         self.current_state['scene'] = normalize_scene(self.current_state)

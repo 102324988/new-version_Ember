@@ -247,6 +247,18 @@ def test_failed_archive_lookup_still_finishes_with_scoped_unknown(monkeypatch):
      '我选橄榄色。蓝夹收没收好，我还不确定。', True),
     ('浅灰和深蓝你选哪个？还有，蓝夹已经收好了吗？',
      '我选深蓝。蓝夹收没收好，我还不确定。', True),
+    ('谢谢你。米白和墨绿你帮我选一个，然后说说蓝夹到底收完没有。',
+     '我选墨绿。蓝夹收没收好，我还不确定。', True),
+    ('多谢啦，奶白还是天蓝？顺便问一下你那个蓝夹收完没有？',
+     '我选天蓝。蓝夹收没收好，我还不确定。', True),
+    ('先谢啦。浅灰和米白你选一个，然后再说下蓝夹现在整理完没有。',
+     '我选米白。蓝夹收没收好，我还不确定。', True),
+    ('墨绿还是卡其？然后说下蓝夹收完没有，不确定就直说。',
+     '我选卡其。蓝夹收没收好，我还不确定。', True),
+    ('先问一句，你那蓝夹到底收完没有？不确定就直说。', '蓝夹收没收好，我还不确定。', False),
+    ('谢谢你。请问你那个蓝夹收完没有？', '蓝夹收没收好，我还不确定。', False),
+    ('谢谢。蓝夹收完没有，墨绿和米白你帮我选一个。', '我选米白。蓝夹收没收好，我还不确定。', True),
+    ('谢谢你。然后说说蓝文件夹现在收完没有？', '蓝夹收没收好，我还不确定。', False),
 ])
 def test_scoped_activity_only_emits_and_saves_verified_text(monkeypatch, text, expected, with_choice):
     monkeypatch.setattr(settings, 'DIALOGUE_ACTIVITY_EVIDENCE', True)
@@ -260,16 +272,46 @@ def test_scoped_activity_only_emits_and_saves_verified_text(monkeypatch, text, e
     bus.subscribe('llm.finished', lambda e: finals.append(e.data['text']))
     brain.process_dialogue(text)
     assert chunks == finals == [expected]
-    assert memory.get_full_messages()[-1]['content'] == expected
+    assert [row['content'] for row in memory.get_full_messages()[-2:]] == [text, expected]
     assert brain.llm_client.select_activity_color.call_count == int(with_choice)
     brain.llm_client.stream_chat.assert_not_called()
 
 
-@pytest.mark.parametrize('text', ['我的蓝夹收好了吗？', '蓝夹里有没有纸？也给我讲一下算法。',
-    '蓝夹已经收好了，接下来看哪页？', '蓝夹和透明夹子挑一个。', '蓝夹里面放了几页和什么时候能收好？'])
+@pytest.mark.parametrize('text', [
+    '我的蓝夹收好了吗？', '蓝夹里有没有纸？也给我讲一下算法。',
+    '蓝夹已经收好了，接下来看哪页？', '蓝夹和透明夹子挑一个。', '蓝夹里面放了几页和什么时候能收好？',
+    '谢谢你。米白还是墨绿？然后说说她的蓝夹收完没有。',
+    '谢谢你。米白还是墨绿？然后说说你的蓝夹收完没有。帮我把笔记也收好。',
+    '我想安静待会儿。先帮我在银灰和米白里选一个，然后说说蓝夹到底收完没有。',
+    '蓝夹收完没有，如果收完就告诉我桌上的位置。',
+    '你别回答蓝夹收完没有。',
+    '把“蓝夹收完没有”翻译成英文。',
+    '“谢谢你。蓝夹收完没有”是别人刚说的话。',
+    '谢谢你。银灰还是米白？蓝夹收完没有？',
+    '米白和米白你帮我选一个，然后说说蓝夹收完没有。',
+    '谢谢。然后说说蓝夹收完没有？不用回复。',
+])
 def test_activity_does_not_intercept_other_subjects_or_compound_requests(text):
     from brain.activity_answer import supported_question
     assert supported_question(text) is None
+
+
+@pytest.mark.parametrize('enabled,text', [
+    (True, '谢谢你。米白还是墨绿？然后说说你的蓝夹收完没有。顺便解释下怎么修改目录。'),
+    (False, '谢谢你。米白还是墨绿？然后说说你的蓝夹收完没有。'),
+])
+def test_casual_activity_question_keeps_original_input_when_direct_answer_is_skipped(monkeypatch, enabled, text):
+    monkeypatch.setattr(settings, 'DIALOGUE_ACTIVITY_EVIDENCE', enabled)
+    brain, bus, memory, _ = seeded_brain()
+    state = make_state_manager()
+    state.event_bus, state.short_term_memory, state.prepare_dialogue = bus, memory, Mock()
+    brain.state_manager = state
+    brain.llm_client.stream_chat.return_value = iter(['完整生成的合成回复。'])
+    brain.process_dialogue(text)
+    brain.llm_client.select_activity_color.assert_not_called()
+    brain.llm_client.stream_chat.assert_called_once()
+    assert brain.llm_client.stream_chat.call_args.kwargs['messages'][-1] == {'role': 'user', 'content': text}
+    assert [row['content'] for row in memory.get_full_messages()[-2:]] == [text, '完整生成的合成回复。']
 
 
 def test_selector_request_has_one_cancelable_slot_and_no_retry(monkeypatch):

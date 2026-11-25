@@ -8,6 +8,7 @@ from config.settings import settings
 from brain.llm_client import LLMClient
 from memory.neo4j_memory import Neo4jGraphMemory
 from memory.postgres import initialize_episodic
+from persona.persona_settings import persona_prompts
 
 logger = logging.getLogger(__name__)
 
@@ -239,7 +240,7 @@ class EntityExtractionMemory:
 
         使用 system_prompt + graph_consolidation_prompt 作为提示词
         """
-        system_prompt = settings.SYSTEM_PROMPT
+        system_prompt = persona_prompts(self.event_bus).system
         graph_prompt = settings.GRAPH_CONSOLIDATION_PROMPT
 
         # 替换变量

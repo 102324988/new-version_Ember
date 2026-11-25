@@ -30,24 +30,42 @@ try {
       load() {}
     };
   });
-  let socket, current = null;
+  let socket, current = null, idleInference = false, configPolls = 0;
   let completeWhileCancelling = false;
   const sent = [], history = [];
   const now = Date.parse('2026-10-21T17:40:00+08:00');
   let pipeline = { phase: 'budget_wait', pending_memories: 2, batches: [{ id: 'synthetic-memory-batch', stage: 'encoding', index: 0, total: 1 }],
     encoding_retry: { code: 'budget_wait', attempts: 0, next_attempt_at: now/1000+3600 } };
   const memoryActions = [];
+  const quotaChanges = [];
+  let quotas = { chat: 150, embedding: 200, tts: 200, memory: 50, per_minute: 12 };
+  let quotaRevision = 0;
+  let failQuotaSave = true;
   let failMemoryRetry = true;
   const emit = message => socket.send(JSON.stringify(message));
   const config = () => ({ display_name: '依鸣', logical_time: '2026-10-21 17:40:00',
-    is_thinking: current && (['running', 'stopping'].includes(current.status) || current.released === false), timezone: 'Asia/Shanghai', turn: current,
+    is_thinking: idleInference || current && (['running', 'stopping'].includes(current.status) || current.released === false), timezone: 'Asia/Shanghai', turn: current,
     state: { scene: { communication_mode: 'unknown' } }, capabilities: { cancel_turn: true, correlated_audio: true, message_receipts: true },
-    service: { enabled: true, foreground_unlimited: true, limits: { chat: 150, embedding: 200, tts: 200 },
+    service: { enabled: true, foreground_unlimited: true, limits: { chat: quotas.chat, embedding: quotas.embedding, tts: quotas.tts },
+      background_quotas: quotas, quota_revision: quotaRevision,
       background_usage: { chat: { requests: 150 } }, usage: { chat: { requests: 999 } }, jobs: [] },
     status: { database: { ready: true }, long_term_memory: { ready: true }, scene: { ready: true }, memory_pipeline: pipeline, paused: false } });
   await page.route('http://localhost:8000/**', route => {
     const url = new URL(route.request().url());
+    if (url.pathname === '/config') configPolls++;
     if (url.pathname === '/auth/devices') return route.fulfill({ json: { items: [] } });
+    if (url.pathname === '/service/background-quotas') {
+      assert.equal(route.request().method(), 'PATCH');
+      const changes = route.request().postDataJSON();
+      quotaChanges.push(changes);
+      if (failQuotaSave) {
+        failQuotaSave = false;
+        return route.fulfill({ status: 503, json: { detail: '合成限额暂未保存' } });
+      }
+      quotas = { ...quotas, ...changes };
+      quotaRevision += 1;
+      return route.fulfill({ json: { background_quotas: quotas, quota_revision: quotaRevision } });
+    }
     if (url.pathname === '/memory/tasks') {
       if (route.request().method() === 'POST') {
         const data = route.request().postDataJSON();
@@ -198,10 +216,36 @@ try {
   assert.equal(sent.at(-1).retry_reply, true);
   assert.equal(await page.locator('.message-user').count(), usersBeforeRetry);
   finish('completed');
+  idleInference = true;
+  await input.fill('后台推演时马上接话');
+  const beforeIdle = sent.length;
+  const pollDeadline = Date.now() + 8000;
+  const previousPolls = configPolls;
+  while (configPolls < previousPolls + 2 && Date.now() < pollDeadline) await new Promise(resolve => setTimeout(resolve, 30));
+  assert.ok(configPolls >= previousPolls + 2);
+  assert.equal(await page.locator('.composer .primary-button').isEnabled(), true);
+  await input.press('Enter');
+  await page.getByRole('button', { name: '停止生成', exact: true }).waitFor();
+  assert.equal(sent.length, beforeIdle + 1);
+  idleInference = false;
+  finish('completed');
   await page.getByRole('button', { name: '设置', exact: true }).click();
   const settings = page.getByRole('dialog', { name: '设置' });
   await settings.getByText('用户对话：应用不设每日额度', { exact: true }).waitFor();
   await settings.getByText(/后台今日调用：模型 150\/150/).waitFor();
+  const chatQuota = settings.getByRole('spinbutton', { name: '模型每日上限' });
+  await chatQuota.fill('240');
+  await settings.getByRole('button', { name: '保存限额', exact: true }).click();
+  await settings.getByRole('alert').filter({ hasText: '合成限额暂未保存' }).waitFor();
+  assert.equal(await chatQuota.inputValue(), '240');
+  await settings.getByRole('button', { name: '保存限额', exact: true }).click();
+  await settings.getByText('后台限额已保存，立即生效。', { exact: true }).waitFor();
+  assert.deepEqual(quotaChanges, [{ chat: 240 }, { chat: 240 }]);
+  await settings.getByRole('button', { name: '解除全部后台限额' }).click();
+  await settings.getByText(/后台今日调用：模型 150\/不限额/).waitFor();
+  assert.equal(await settings.getByRole('button', { name: '解除全部后台限额' }).isDisabled(), true);
+  assert.deepEqual(quotaChanges.at(-1), { chat: null, embedding: null, tts: null, memory: null, per_minute: null });
+  assert.equal(await settings.getByRole('checkbox', { name: '模型不限额' }).isChecked(), true);
   await settings.getByText(/后台预算暂停，聊天仍可继续/).waitFor();
   await settings.getByRole('button', { name: '暂停后台整理', exact: true }).click();
   await settings.getByRole('button', { name: '继续后台整理', exact: true }).click();
@@ -215,7 +259,8 @@ try {
   await page.screenshot({ path: resolve(project, 'test-results', 'turn-interrupted.png'), fullPage: true });
   console.log(JSON.stringify({ result: 'passed', scenarios: ['wait for terminal before next send', 'edit draft while stopping',
     'reject stale text/audio', 'cancel queued send', 'reload interrupted records', 'disconnect cancels automatic follow-up', 'completion waits for worker release',
-    'proactive turn and audio without fake user input', 'same user ID reply retry', 'foreground unlimited display', 'memory pause resume and failed retry recovery'] }));
+    'proactive turn and audio without fake user input', 'same user ID reply retry', 'foreground unlimited display',
+    'quota save failure, retry and unlock', 'memory pause resume and failed retry recovery'] }));
 } finally {
   await browser?.close();
   await vite.close();

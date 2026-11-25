@@ -25,6 +25,7 @@ class EventBus:
     def __init__(self):
         self._subscribers: Dict[str, List[Callable[[Event], None]]] = defaultdict(list)
         self.operation_lock = threading.RLock()
+        self.world_revision = 0  # Invalidates in-flight idle inference across clock and archive changes.
         self.paused = False
         self.world_paused = False
         self.memory_paused = False
@@ -60,6 +61,7 @@ class EventBus:
             self._base_logical_time = now
             self._real_start_time = time.monotonic()
             self.world_paused = bool(paused)
+            self.world_revision += 1
 
     @property
     def formatted_logical_now(self):
@@ -72,6 +74,7 @@ class EventBus:
         with self.operation_lock:
             self._base_logical_time = to_epoch(value)
             self._real_start_time = time.monotonic()
+            self.world_revision += 1
 
     def set_time_accel_factor(self, factor: float):
         """动态设置时间加速因子，同时修正基准时间以保持逻辑时间连续"""
@@ -84,6 +87,7 @@ class EventBus:
 
         # 更新加速因子
         self.time_accel_factor = factor
+        self.world_revision += 1
 
         # 重置基准，保持逻辑时间连续
         self._base_logical_time = current_logical

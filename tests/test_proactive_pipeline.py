@@ -145,6 +145,55 @@ def test_pending_user_input_has_priority_over_idle_state_call():
     evolve.assert_not_called()
 
 
+@pytest.mark.parametrize('change', ['dialogue', 'restore', 'scene', 'pause_resume'])
+def test_idle_provider_wait_yields_world_and_drops_obsolete_results(change):
+    state = make_state_manager()
+    bus = state.event_bus
+    state.ready = True
+    state.last_interaction_real_time = time.monotonic() - 100
+    started, respond = threading.Event(), threading.Event()
+    def delayed(*args, **kwargs):
+        started.set()
+        assert respond.wait(3)
+        return '<tool>{"name":"memory_query","parameters":{}}</tool>'
+    state.llm_client = Mock()
+    state.llm_client.one_chat.side_effect = delayed
+    state.tool_processor.process_llm_output.reset_mock()
+    spoken = []
+    bus.subscribe('idle_speak', spoken.append)
+    tick = threading.Thread(target=state._on_tick, args=(Event('system.tick', {}),))
+    tick.start()
+    try:
+        assert started.wait(3)
+        assert bus.operation_lock.acquire(timeout=.5)
+        try:
+            if change == 'dialogue':
+                turn = bus.turns.begin(1000, 'user-arrived')
+                turn.finish('completed')
+                turn.release()
+            elif change == 'restore':
+                bus.restore_logical_time(bus.logical_now - 60)
+            elif change == 'scene':
+                state.current_state = copy.deepcopy(state.current_state)
+            else:
+                bus.pause_world(True)
+                bus.pause_world(False)
+            committed = state.current_state
+            last_interaction = state.last_interaction_real_time
+        finally:
+            bus.operation_lock.release()
+    finally:
+        respond.set()
+        tick.join(3)
+    assert not tick.is_alive()
+    assert not state.is_thinking
+    assert state.current_state is committed
+    assert state.last_interaction_real_time == last_interaction
+    assert state.last_error is None
+    state.tool_processor.process_llm_output.assert_not_called()
+    assert not spoken
+
+
 @pytest.mark.parametrize('pulse', [{'should_speak': 'false'}, ['invalid']])
 def test_non_boolean_or_malformed_pulse_does_not_commit_model_state(pulse):
     state = make_state_manager()

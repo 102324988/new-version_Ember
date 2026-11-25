@@ -1,4 +1,5 @@
 from brain.llm_client import LLMClient
+from config.dialogue_policy import STYLE_DEFAULTS
 from config.settings import settings
 from memory.short_term import ShortTermMemory
 from core.event_bus import EventBus, Event
@@ -14,12 +15,13 @@ from brain.tag_utils import validate_and_fix_llm_output, extract_thought_and_spe
 from core.turns import TurnCancelled, TERMINAL
 from core.errors import public_error
 from core.service_policy import call_scope
-from brain.dialogue_context import build_dialogue_messages
+from brain.dialogue_context import build_compact_reply_messages, build_dialogue_messages
 from brain import activity_answer, reply_evidence
 from core.model_errors import classify
 from core.proactive import delivery_rules, ProactivePolicy
 from core.proactive_events import EventProactivePolicy, ordinary_offer
 from tools.processor import ToolCallProcessor
+from persona.persona_settings import persona_prompts
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +122,8 @@ class Brain:
                         self._deliver_notice(offer['summary'], turn)
                     else:
                         self._active_proactive_offer = offer
-                        self.memory.update_base_prompt(self.tool_processor.build_system_prompt_with_tools(settings.SYSTEM_PROMPT))
+                        self.memory.update_base_prompt(self.tool_processor.build_system_prompt_with_tools(
+                            persona_prompts(self.event_bus).proactive))
                         self._llm_speak(self.memory, pack=True, proactive=True, turn=turn)
                 except TurnCancelled:
                     self._finish_incomplete(turn, 'interrupted')
@@ -173,7 +176,10 @@ class Brain:
             return
         turn = self.event_bus.turns.begin(metadata.get('turn_timestamp', metadata.get('timestamp', int(self.event_bus.logical_now * 1000))),
             metadata.get('turn_id') or metadata.get('message_id'))
+        turn.mark('world_lock_acquired')
         turn.user_message_id = metadata.get('message_id') or turn.id
+        persona = persona_prompts(self.event_bus)
+        turn.persona_revision = persona.revision
 
         try:
             self._is_processing = True
@@ -184,13 +190,14 @@ class Brain:
                     message_id=metadata.get('message_id', str(uuid.uuid4())))
             turn.check()
             if not metadata.get('retry_state_prepared'):
+                turn.mark('state_preparation_started')
                 self.state_manager.prepare_dialogue(user_message)
             turn.mark('state_ready')
             turn.check()
 
             # Foreground and proactive turns select their prompt at entry.
             self.memory.update_base_prompt(
-                self.tool_processor.build_system_prompt_with_tools(settings.DIALOGUE_REPLY_PROMPT)
+                self.tool_processor.build_system_prompt_with_tools(persona.reply)
             )
 
             self._llm_speak(self.memory, pack=True, turn=turn)
@@ -319,7 +326,7 @@ class Brain:
             return answer
         try:
             raw = self.llm_client.select_activity_color(
-                activity_answer.color_messages(colors, settings.CORE_PERSONA), turn)
+                activity_answer.color_messages(colors, persona_prompts(self.event_bus).core), turn)
             turn.check()
             choice = activity_answer.color_choice(raw, colors)
         except TurnCancelled:
@@ -406,12 +413,22 @@ class Brain:
         if offer:
             messages[0]['content'] += '\n【本轮主动事件：程序记录】' + json.dumps(offer, ensure_ascii=False) + '\n围绕该事件自然开口，按内容说完整；不将提醒或计时解释成用户已经完成活动。'
 
+        first_messages = messages
+        persona = persona_prompts(self.event_bus)
+        if (settings.DIALOGUE_POLICY == 'expressive_v1' and settings.DIALOGUE_RHYTHM == 'compact_v1'
+                and not persona.speaking_preference
+                and settings.DIALOGUE_STYLE == STYLE_DEFAULTS and not (proactive or memories or query)
+                and isinstance(self.state_manager, StateManager)):
+            first_messages = build_compact_reply_messages(
+                persona.core, history, self.state_manager.current_state, now
+            ) or messages
+
         full_content = ""
         chunk_count = 0
         max_chunks = 10000
 
         try:
-            stream_gen = self._stream_reply(messages, turn)
+            stream_gen = self._stream_reply(first_messages, turn)
 
             for chunk in stream_gen:
                 chunk_count += 1
